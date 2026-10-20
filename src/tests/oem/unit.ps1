@@ -101,6 +101,15 @@ foreach ($file in @('_oem.ps1', 'machine-setup.ps1', 'user-setup.ps1')) {
 }
 #endregion
 
+#region The per-user part never shows a window
+$userText = [IO.File]::ReadAllText((Join-Path $kit 'user-setup.ps1'))
+foreach ($pattern in @('Start-Process', 'Wait-DevConfigKeyPress', 'Invoke-DevConfigWslUbuntuInstall', 'Invoke-DevConfigProcess', 'Read-Host', 'Out-GridView')) {
+    Assert-Kit ($userText -notmatch $pattern) "user-setup.ps1 must not use '$pattern': it runs hidden at first sign-in and must never show a window or wait for input."
+}
+$command = Get-DevSetupUserCommand -ScriptPath 'C:\ProgramData\CalmOS-Offline\user-setup.ps1'
+Assert-Kit ($command -match '-WindowStyle Hidden' -and $command -match '-NonInteractive') 'The Active Setup command must start PowerShell hidden and non-interactive.'
+#endregion
+
 #region Every standard step is covered by the kit
 # Capture the official Partial step names by running each phase with recording stand-ins.
 $Script:capturedSteps = @()

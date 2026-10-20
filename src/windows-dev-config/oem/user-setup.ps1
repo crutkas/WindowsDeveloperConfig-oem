@@ -3,19 +3,22 @@
   Per-user part of the offline Windows Dev Config standard setup.
 
 .DESCRIPTION
-  machine-setup.ps1 registers this script with Active Setup, so Windows runs it once in each
-  user's first sign-in. It never elevates and needs no network access.
+  machine-setup.ps1 registers this script with Active Setup, so Windows runs it once, hidden, in
+  each user's first sign-in. It never elevates, needs no network access, and never shows a
+  window or waits for input.
 
-  -Stage SignIn runs hidden while Windows prepares the desktop: it applies the File Explorer,
-  Start, and theme settings before Explorer starts (so they show immediately), then opens a
-  window that runs -Stage Main for everything else: Terminal, PowerShell profile, Copilot,
-  and Ubuntu. Steps that cannot finish yet (for example WSL waiting for a restart) run again at
-  the next sign-in.
+  Explorer waits for Active Setup before it shows the desktop, so this runs while Windows still
+  shows its own first sign-in screen; when the desktop appears, setup is already done. Most
+  per-user settings are already in place from the Default user profile that machine-setup.ps1
+  prepared before OOBE; this script checks them and adds what needs the user's own account:
+  apps, Windows Terminal, GitHub Copilot, and Ubuntu.
+
+  Steps that cannot finish yet (for example WSL waiting for a restart) run again, hidden, at the
+  next sign-in. Run it from a console to see the same output the online setup shows.
 #>
 
 [CmdletBinding()]
 param(
-    [ValidateSet('SignIn', 'Main')] [string] $Stage = 'Main',
     # Development only: skips the Microsoft signature check on the installed payload.
     [switch] $AllowUnsigned
 )
@@ -42,16 +45,12 @@ $root = $PSScriptRoot
 $manifest = Read-DevSetupManifest -Root $root
 $userState = Join-Path $env:LOCALAPPDATA 'CalmOS'
 New-Item -ItemType Directory -Path $userState -Force | Out-Null
-
-if ($Stage -eq 'Main') {
-    try { $Host.UI.RawUI.WindowTitle = 'Windows Dev Config -- finishing setup' } catch { Write-Verbose 'No console title.' }
-    try {
-        $utf8NoBom = [Text.UTF8Encoding]::new($false)
-        [Console]::OutputEncoding = $utf8NoBom
-        $OutputEncoding = $utf8NoBom
-    } catch {
-        Write-Verbose "Could not force UTF-8 console encoding: $($_.Exception.Message)"
-    }
+try {
+    $utf8NoBom = [Text.UTF8Encoding]::new($false)
+    [Console]::OutputEncoding = $utf8NoBom
+    $OutputEncoding = $utf8NoBom
+} catch {
+    Write-Verbose "Could not force UTF-8 console encoding: $($_.Exception.Message)"
 }
 
 $installRoot = $Script:DevSetupInstallRoot
@@ -66,7 +65,7 @@ if (-not $AllowUnsigned) {
 }
 . ([scriptblock]::Create($securityCode))
 Assert-DevConfigProtectedTree -Directory $installRoot
-if (-not $AllowUnsigned -and $Stage -eq 'Main') {
+if (-not $AllowUnsigned) {
     Assert-DevConfigMicrosoftSigned -Directory $installRoot
 }
 foreach ($file in @('_console', '_step-runner', '_elevation', '_registry', '_environment', '_retry', '_terminal',
@@ -77,26 +76,10 @@ foreach ($file in @('_console', '_step-runner', '_elevation', '_registry', '_env
 $Script:DevConfigAction        = 'Partial'
 $Script:DevConfigWorkload      = 'devconfig'
 $Script:DevConfigAllowUnsigned = [bool]$AllowUnsigned
+# Nothing can answer an update prompt here, and the PC may be offline.
+$env:COPILOT_AUTO_UPDATE = 'false'
 
-if ($Stage -eq 'SignIn') {
-    # Explorer reads these when it starts, which is right after Active Setup returns.
-    Start-DevConfigLog -Path (Join-Path $userState 'offline-signin-log.txt') -Append
-    foreach ($phase in @(
-        { Invoke-RegistryExplorerPhase },
-        { Invoke-RegistryTaskbarSearchPhase },
-        { if (-not (Test-DevConfigDarkThemeSet)) { Set-DevConfigDarkTheme } }
-    )) {
-        try { & $phase } catch { Write-Host "Early setting failed: $($_.Exception.Message)" }
-    }
-    Stop-DevConfigLog
-    # conhost keeps this window independent of Windows Terminal, which the setup updates and configures.
-    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $console = Join-Path $env:SystemRoot 'System32\conhost.exe'
-    Start-Process -FilePath $console -ArgumentList "`"$shell`" -NoProfile -ExecutionPolicy RemoteSigned -File `"$PSCommandPath`" -Stage Main"
-    exit 0
-}
-
-#region Main stage
+#region Steps
 
 function Get-DevSetupUserApps {
     $apps = @($manifest.WinGet) + @($manifest.Packages | Where-Object { $_.Kind -eq 'msix' })
@@ -173,7 +156,8 @@ function Install-DevSetupUserApp {
 
 # Registering again for this user creates missing aliases and app data folders.
 function Register-DevSetupUserApps {
-    $deadline = (Get-Date).AddMinutes(10)
+    # Bounded: this runs while Windows holds the first sign-in screen.
+    $deadline = (Get-Date).AddMinutes(3)
     $requested = @{}
     $failed = @{}
     while ((Get-Date) -lt $deadline) {
@@ -260,9 +244,16 @@ function Install-DevSetupUbuntu {
     if ((Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash -ne $manifest.Ubuntu.Sha256) {
         throw "The offline Ubuntu image failed its SHA-256 check: $image"
     }
-    Invoke-DevConfigWslUbuntuInstall -MaxAttempts 2 -Arguments @(
-        '--install', '--from-file', $image, '--name', $manifest.Ubuntu.Name, '--no-launch'
-    )
+    # The official install step opens a console window for wsl.exe; this redirected call shows nothing.
+    Write-Host "Installing Ubuntu from $image..."
+    $arguments = @('--install', '--from-file', $image, '--name', $manifest.Ubuntu.Name, '--no-launch')
+    $exitCode = $null
+    for ($attempt = 1; $attempt -le 2 -and $exitCode -ne 0; $attempt++) {
+        $exitCode = Get-DevConfigWslExitCode -Arguments $arguments -TimeoutSeconds 1200 -NoInput
+    }
+    if ($exitCode -ne 0) {
+        throw "wsl $($arguments -join ' ') failed with exit code $exitCode"
+    }
     if (-not (Wait-DevConfigUbuntuVisible)) {
         Set-DevConfigStepUnverified -Reason 'Ubuntu was installed but WSL does not list it yet. It will be checked again at your next sign-in.'
         $Script:DevSetupRetryNextSignIn = $true
@@ -284,7 +275,7 @@ function Set-DevSetupRetry {
     if ($attempts -ge 3) { return $false }
     New-ItemProperty -LiteralPath $Script:DevSetupUserStateKey -Name 'Attempts' -Value ($attempts + 1) -PropertyType DWord -Force | Out-Null
     New-ItemProperty -LiteralPath $key -Name $Script:DevSetupUserRunOnceName -PropertyType String -Force `
-        -Value (Get-DevSetupUserCommand -ScriptPath $PSCommandPath -Stage Main) | Out-Null
+        -Value (Get-DevSetupUserCommand -ScriptPath $PSCommandPath) | Out-Null
     return $true
 }
 
@@ -356,7 +347,6 @@ if (-not $failure) {
 Write-DevSetupSummary -Name 'Calm OS setup' -Failure $failure
 Save-DevSetupResult -Path (Join-Path $userState 'offline-user-setup-result.json') -Failure $failure
 Stop-DevConfigLog
-Wait-DevConfigKeyPress
 if ($failure) { exit 1 }
 exit 0
 

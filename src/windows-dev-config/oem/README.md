@@ -7,9 +7,11 @@ irm https://aka.ms/devconfig/standard/setup.ps1 | iex
 ```
 
 The difference is that everything is downloaded ahead of time. The PC needs **no network
-access** during Windows setup or at first sign-in. When the user first reaches the desktop, the
-developer tools, settings, Windows Terminal, PowerShell 7, the GitHub Copilot CLI, and WSL with
-Ubuntu are already in place.
+access** during Windows setup or at first sign-in, and **the user never sees a setup window**.
+The work happens while Windows shows its own setup screens: the machine part before OOBE, and the
+per-user part behind Windows' first sign-in screen. When the desktop appears, the developer
+tools, settings, Windows Terminal, PowerShell 7, the GitHub Copilot CLI, and WSL with Ubuntu are
+already in place.
 
 ## What the user gets
 
@@ -32,13 +34,14 @@ The kit reproduces the standard setup (`-Action Partial`):
 flowchart TD
     A["Internet-connected PC<br/>download.ps1"] -->|"kit folder (about 3 GB)"| B["Windows image<br/>C:\setup\devsetup"]
     B --> C{"Machine part:<br/>machine-setup.ps1"}
-    C -->|"Option A: SetupComplete.cmd<br/>(SYSTEM, first boot)"| D["Machine-wide installs and settings"]
+    C -->|"Option A: SetupComplete.cmd<br/>(SYSTEM, before OOBE)"| D["Machine-wide installs and settings"]
     C -->|"Option B: audit mode<br/>(administrator, before sysprep)"| D
-    D --> E["Active Setup entry:<br/>run user-setup.ps1 once per user"]
-    F["User finishes OOBE and signs in"] --> G["Explorer runs the Active Setup StubPath as that user"]
+    D --> D2["Default user profile:<br/>Explorer, Start, dark mode, prompt settings"]
+    D2 --> E["Active Setup entry:<br/>run user-setup.ps1 once per user"]
+    F["User finishes OOBE and signs in"] --> G["Explorer runs the Active Setup StubPath as that user<br/>(Windows keeps its 'This might take a few minutes' screen up)"]
     E -.-> G
-    G --> H["user-setup.ps1 -Stage SignIn (hidden)<br/>Explorer, Start, and dark mode settings before the desktop loads"]
-    H --> I["user-setup.ps1 -Stage Main (visible window)<br/>Terminal, PowerShell profile, Copilot, Ubuntu"]
+    G --> H["user-setup.ps1, hidden, about 1-2 minutes<br/>apps, Terminal, Copilot, Ubuntu; checks every setting"]
+    H --> I["Desktop appears, fully set up"]
 ```
 
 | File | Runs | Account | Network |
@@ -46,7 +49,7 @@ flowchart TD
 | `download.ps1` | Once, on a technician PC | Any user | Required |
 | `machine-setup.ps1` | Once per device or image | SYSTEM or an administrator | Not used |
 | `SetupComplete.cmd` | Windows runs it at the end of setup | SYSTEM | Not used |
-| `user-setup.ps1` | Once per user, at first sign-in | That user, never elevated | Not used |
+| `user-setup.ps1` | Once per user, at first sign-in, hidden | That user, never elevated | Not used |
 
 Both setup scripts load the Microsoft-signed Windows Dev Config steps from the kit, so every
 setting, check, and line of console output matches the online setup. Only downloads are replaced
@@ -174,20 +177,25 @@ Keep `C:\setup\devsetup` in the image until `machine-setup.ps1` has run. After t
      stages them for each user's first sign-in instead), runs the other installers machine-wide
      with silent switches, sets long paths, installs the fonts, turns on WSL, and installs the WSL
      MSI.
+   - Writes the user's File Explorer, taskbar, Start, dark mode, Oh My Posh prompt, WSL, and
+     PowerToys settings into the Default user profile, so every account Windows creates from it,
+     including the one made in OOBE, starts with them.
    - Copies the per-user files to `C:\ProgramData\CalmOS-Offline` and registers
      `user-setup.ps1` with Active Setup. It never restarts Windows.
 2. **OOBE:** the customer goes through OOBE as normal.
-3. **First sign-in:** Explorer runs the Active Setup entry once for that user:
-   - A hidden step applies the File Explorer, taskbar, Start, and dark mode settings before the
-     desktop appears, so no sign-out is needed for them.
-   - A window titled **Windows Dev Config -- finishing setup** then makes sure Terminal,
-     PowerShell 7, and the other apps are registered for this user (including their `pwsh`,
-     `oh-my-posh`, and `winapp` commands), and configures Terminal, the PowerShell profile,
-     Copilot, and Ubuntu. It shows the same phases and check marks as the online setup, takes about
-     3 minutes, ends with a summary, and closes on a key press or after 15 minutes.
-   - If a step cannot finish yet, for example because WSL needs a restart, the window says so and
-     the script runs again at the next sign-in (up to three times).
-4. **Every later user** on the PC gets the same per-user setup at their first sign-in.
+3. **First sign-in:** Explorer runs the Active Setup entry once for that user, hidden, and waits
+   for it before it shows the desktop. Meanwhile Windows keeps its own "This might take a few
+   minutes" screen up, so the user sees nothing from the kit:
+   - It installs or registers Terminal, PowerShell 7, WinGet, and the other apps for this user
+     (including their `pwsh`, `oh-my-posh`, and `winapp` commands), configures Terminal, adds the
+     Copilot profile, marketplace, and WinUI plugin, and adds Ubuntu.
+   - It checks every per-user setting from the standard setup and fixes any that Windows reset
+     during the first sign-in (Windows resets dark mode, for example).
+   - This took about 70 seconds in testing when the apps were provisioned for all users, and about
+     2 minutes when `SetupComplete.cmd` left them to install per user.
+   - If a step cannot finish yet, for example because WSL needs a restart, the script runs again,
+     hidden, at the next sign-in (up to three times).
+4. **Every later user** on the PC gets the same per-user setup, hidden, at their first sign-in.
 
 If the PC is online at first sign-in, the Copilot marketplace is registered from GitHub exactly
 like the online setup. Otherwise the kit's copy is used.
@@ -208,13 +216,14 @@ Logs:
 |---|---|
 | Machine part | `C:\ProgramData\CalmOS-Offline\machine-setup-log.txt` (MSI logs in `logs\`) |
 | SetupComplete console output | `C:\Windows\Temp\devsetup-machine-setup.txt` |
-| User part | `%LOCALAPPDATA%\CalmOS\offline-user-setup-log.txt` and `offline-signin-log.txt` |
+| User part | `%LOCALAPPDATA%\CalmOS\offline-user-setup-log.txt` (same phases and check marks as the online setup) |
 
 ## Troubleshooting
 
 - **Run the machine part again:** run the audit-mode command from an elevated PowerShell. Steps
   that are done report `already OK`.
-- **Run the user part again** (signed in as that user, not elevated):
+- **Run the user part again** (signed in as that user, not elevated). Run from a console, it shows
+  the same output it writes to its log:
 
   ```powershell
   powershell -NoProfile -ExecutionPolicy RemoteSigned -File C:\ProgramData\CalmOS-Offline\user-setup.ps1
@@ -238,8 +247,8 @@ Logs:
   `C:\ProgramData\CalmOS-Offline\copilot`. To switch it to GitHub later, run
   `copilot plugin marketplace remove win-dev-skills` and then
   `copilot plugin marketplace add microsoft/win-dev-skills`.
-- There are no UAC prompts and no restarts, and the Terminal font applies right away instead of at
-  the next sign-in.
+- There are no windows, UAC prompts, or restarts, and the Terminal font applies right away instead
+  of at the next sign-in. The first sign-in takes 1-2 minutes longer behind Windows' own screen.
 
 ## Testing the kit in Hyper-V
 

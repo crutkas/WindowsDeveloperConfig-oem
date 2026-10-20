@@ -91,7 +91,8 @@ if (-not $AllowUnsigned) {
 
 $stepsDir = Join-Path $installRoot 'steps'
 foreach ($file in @('_console', '_step-runner', '_elevation', '_registry', '_environment', '_retry', '_terminal',
-        '_pwsh-bootstrap', 'registry-system', 'fonts', 'wsl')) {
+        '_pwsh-bootstrap', 'packages', 'registry-system', 'registry-explorer', 'registry-taskbar-search', 'fonts',
+        'terminal', 'powershell-profile', 'wsl')) {
     . (Join-Path $stepsDir "$file.ps1")
 }
 $Script:DevConfigAction         = 'Partial'
@@ -99,11 +100,61 @@ $Script:DevConfigWorkload       = 'devconfig'
 $Script:DevConfigAllowUnsigned  = [bool]$AllowUnsigned
 $Script:DevConfigWslRestartSignalled = $false
 
+# While the Default user profile is loaded, the official HKCU settings are written to it instead,
+# so every account Windows creates from it (including the one made in OOBE) starts with them.
+$Script:DevSetupHkcuRoot = $null
+function Convert-DevConfigRegistryPath {
+    param(
+        [Parameter(Mandatory)] [string] $KeyPath
+    )
+    if ($Script:DevSetupHkcuRoot -and $KeyPath -match '^HKCU\\') {
+        return "Registry::$Script:DevSetupHkcuRoot\$($KeyPath.Substring(5))"
+    }
+    return $KeyPath -replace '^(HKCU|HKLM|HKCR|HKU|HKCC)\\', '$1:\'
+}
+
 Enable-DevConfigModernTls
 Start-DevConfigLog -Path (Join-Path $offlineRoot 'machine-setup-log.txt') -Append
 
 $userScript = Join-Path $offlineRoot 'user-setup.ps1'
-$userCommand = Get-DevSetupUserCommand -ScriptPath $userScript -Stage SignIn
+$userCommand = Get-DevSetupUserCommand -ScriptPath $userScript
+$defaultProfile = [Environment]::ExpandEnvironmentVariables(
+    (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList').Default)
+$defaultHive = 'HKEY_USERS\CalmOS-DefaultUser'
+$defaultPwshProfile = Join-Path $defaultProfile 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'
+
+function Invoke-DevSetupDefaultUser {
+    param([Parameter(Mandatory)] [scriptblock] $ScriptBlock)
+    $reg = Join-Path $env:SystemRoot 'System32\reg.exe'
+    $output = & $reg load $defaultHive (Join-Path $defaultProfile 'NTUSER.DAT') 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not load the Default user profile: $($output | Out-String)" }
+    $Script:DevSetupHkcuRoot = $defaultHive
+    try {
+        & $ScriptBlock
+    } finally {
+        $Script:DevSetupHkcuRoot = $null
+        # Open registry handles block the unload until they are collected.
+        for ($attempt = 1; $attempt -le 10; $attempt++) {
+            [GC]::Collect()
+            [GC]::WaitForPendingFinalizers()
+            $output = & $reg unload $defaultHive 2>&1
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 1
+        }
+        if ($LASTEXITCODE -ne 0) { Write-Host "  Could not unload the Default user profile: $($output | Out-String)" -ForegroundColor Yellow }
+    }
+}
+
+function Test-DevSetupDefaultPwshProfile {
+    $content = [string](Read-DevConfigTextFile -Path $defaultPwshProfile) -replace "`r`n", "`n"
+    return $content.Contains((Get-DevConfigOhMyPoshProfileBlock))
+}
+
+function Set-DevSetupDefaultPwshProfile {
+    $content = [string](Read-DevConfigTextFile -Path $defaultPwshProfile) -replace "`r`n", "`n"
+    if ($content -and -not $content.EndsWith("`n")) { $content += "`n" }
+    Write-DevConfigTextFile -Path $defaultPwshProfile -Content ($content + (Get-DevConfigOhMyPoshProfileBlock))
+}
 
 # Same install as the official CascadiaFonts step, from the kit's copy of the pinned release.
 function Install-DevSetupCascadiaFonts {
@@ -237,7 +288,7 @@ function Get-DevSetupEntryDescription {
     return $Default
 }
 
-$total = 6
+$total = 7
 $failure = $null
 Write-Host ''
 Write-Host "Calm OS machine setup (offline, Partial) -- $total phases, from $KitRoot" -ForegroundColor Cyan
@@ -292,7 +343,32 @@ try {
         )
     }
 
-    Invoke-DevSetupPhase -Index 6 -Total $total -Title 'First sign-in' -ScriptBlock {
+    # The user's own File Explorer, Start, theme, and prompt settings, applied before OOBE creates the account.
+    Invoke-DevSetupPhase -Index 6 -Total $total -Title 'Settings for new users' -ScriptBlock {
+        Invoke-DevSetupDefaultUser -ScriptBlock {
+            $packageSettings = @(foreach ($package in @(Get-DevConfigPackage -Name @($manifest.Packages | ForEach-Object { $_.Name }))) {
+                if ($package['Settings']) { $package['Settings'] }
+            })
+            Invoke-RegistryExplorerPhase
+            Invoke-RegistryTaskbarSearchPhase
+            Invoke-DevConfigSteps -Steps @(
+                New-DevConfigStep -Name 'DarkTheme' -Description 'Force dark app/system theme' -BestEffort `
+                    -Check { Test-DevConfigDarkThemeSet } `
+                    -Apply { Set-DevConfigDarkTheme }
+                New-DevConfigStep -Name 'OhMyPoshProfile' -Description 'Add Oh My Posh init to the PowerShell 7 profile' -BestEffort `
+                    -Check { Test-DevSetupDefaultPwshProfile } `
+                    -Apply { Set-DevSetupDefaultPwshProfile }
+                $wslFirstRun = $Script:DevConfigWslFirstRunSetting.Clone()
+                $wslFirstRun.Description = 'Skip the WSL welcome window'
+                New-DevConfigRegistryStep -Setting $wslFirstRun
+                foreach ($setting in $packageSettings) {
+                    New-DevConfigRegistryStep -Setting $setting
+                }
+            )
+        }
+    }
+
+    Invoke-DevSetupPhase -Index 7 -Total $total -Title 'First sign-in' -ScriptBlock {
         Invoke-DevConfigSteps -Steps @(
             New-DevConfigStep -Name 'UserSetupFiles' -Description "Stage per-user setup files in $offlineRoot" `
                 -Check { Test-DevSetupUserFilesCurrent } `

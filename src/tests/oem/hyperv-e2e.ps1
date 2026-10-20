@@ -247,7 +247,6 @@ while ($true) {
     $values = @{
         DevSetupMachine  = [string](Test-Path 'C:\ProgramData\CalmOS-Offline\machine-setup-result.json')
         DevSetupUser     = [string](@($profiles | Where-Object { Test-Path (Join-Path $_.FullName 'AppData\Local\CalmOS\offline-user-setup-result.json') }).Count -gt 0)
-        DevSetupSignIn   = [string](@($profiles | Where-Object { Test-Path (Join-Path $_.FullName 'AppData\Local\CalmOS\offline-signin-log.txt') }).Count -gt 0)
         DevSetupUserName = [string](Get-CimInstance Win32_ComputerSystem).UserName
     }
     foreach ($name in $values.Keys) { Set-ItemProperty -Path $key -Name $name -Value $values[$name] }
@@ -370,15 +369,18 @@ $lastStatus = ''
 $lastShot = Get-Date
 $shot = 1
 $done = $false
+$status = @{}
 while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Seconds 30
-    if (((Get-Date) - $lastShot).TotalMinutes -ge 3) {
-        Save-E2EScreenshot -Name ('{0:00}-progress' -f $shot)
+    Start-Sleep -Seconds 15
+    # Once the machine part is done, the first sign-in is near: take frequent shots to catch any window.
+    $interval = if ($status['DevSetupMachine'] -eq 'True') { 15 } else { 180 }
+    if (((Get-Date) - $lastShot).TotalSeconds -ge $interval) {
+        Save-E2EScreenshot -Name ('{0:000}-progress' -f $shot)
         $shot++
         $lastShot = Get-Date
     }
     $status = Get-E2EGuestStatus
-    $summary = 'machine={0} signin={1} user={2} logged-on={3}' -f $status['DevSetupMachine'], $status['DevSetupSignIn'], $status['DevSetupUser'], $status['DevSetupUserName']
+    $summary = 'machine={0} user={1} logged-on={2}' -f $status['DevSetupMachine'], $status['DevSetupUser'], $status['DevSetupUserName']
     if ($summary -ne $lastStatus) {
         Write-E2E "  [$([int]((Get-Date) - $started).TotalMinutes) min] $summary" 'DarkGray'
         $lastStatus = $summary
@@ -389,8 +391,11 @@ while ((Get-Date) -lt $deadline) {
     }
 }
 
-Start-Sleep -Seconds 20
-Save-E2EScreenshot -Name 'zz-final'
+# Keep watching the desktop for a minute after setup reports done.
+foreach ($i in 1..4) {
+    Start-Sleep -Seconds 15
+    Save-E2EScreenshot -Name ('zz-final-{0}' -f $i)
+}
 $elapsed = [int]((Get-Date) - $started).TotalMinutes
 if (-not $done) {
     Write-E2E "Timed out after $elapsed minutes; collecting what is available." 'Yellow'
@@ -406,7 +411,6 @@ try {
         'C:\Windows\Temp\devsetup-machine-setup.txt',
         'C:\Windows\Temp\devsetup-specialize.txt',
         'C:\Windows\Panther\UnattendGC\setupact.log',
-        "C:\Users\$UserName\AppData\Local\CalmOS\offline-signin-log.txt",
         "C:\Users\$UserName\AppData\Local\CalmOS\offline-user-setup-log.txt",
         "C:\Users\$UserName\AppData\Local\CalmOS\offline-user-setup-result.json"
     )

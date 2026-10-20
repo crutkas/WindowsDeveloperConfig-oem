@@ -247,12 +247,10 @@ function Protect-DevSetupDirectory {
 
 function Get-DevSetupUserCommand {
     param(
-        [Parameter(Mandatory)] [string] $ScriptPath,
-        [Parameter(Mandatory)] [ValidateSet('SignIn', 'Main')] [string] $Stage
+        [Parameter(Mandatory)] [string] $ScriptPath
     )
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $window = if ($Stage -eq 'SignIn') { ' -WindowStyle Hidden' } else { '' }
-    return "`"$shell`" -NoProfile -ExecutionPolicy RemoteSigned$window -File `"$ScriptPath`" -Stage $Stage"
+    return "`"$shell`" -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File `"$ScriptPath`""
 }
 
 function Test-DevSetupActiveSetup {
