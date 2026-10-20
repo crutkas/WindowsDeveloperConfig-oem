@@ -22,6 +22,8 @@ $Script:DevSetupOfflineRoot      = Join-Path ([Environment]::GetFolderPath('Comm
 $Script:DevSetupActiveSetupKey   = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{5B0E7C3A-6D61-4C2B-9F3E-0D3C8A1E7F42}'
 $Script:DevSetupUserStateKey     = 'HKCU:\Software\CalmOS\Offline'
 $Script:DevSetupUserRunOnceName  = 'CalmOS-OfflineUserSetup'
+$Script:DevSetupMachineStateKey  = 'HKLM:\SOFTWARE\CalmOS\Offline'
+$Script:DevSetupMachineRetryTask = 'WindowsDevConfig-OfflineMachineRetry'
 $Script:DevSetupPortableSource   = 'Microsoft.Winget.Source_8wekyb3d8bbwe'
 $Script:DevSetupProvisionedCache = $null
 
@@ -274,6 +276,37 @@ function Register-DevSetupActiveSetup {
     New-ItemProperty -LiteralPath $key -Name 'Version' -Value ($Script:DevSetupKitVersion.Replace('.', ',') + ',0') -PropertyType String -Force | Out-Null
     New-ItemProperty -LiteralPath $key -Name 'IsInstalled' -Value 1 -PropertyType DWord -Force | Out-Null
     New-ItemProperty -LiteralPath $key -Name 'ComponentID' -Value 'CalmOS-Offline' -PropertyType String -Force | Out-Null
+}
+
+# Schedules (or clears) a hidden SYSTEM rerun of the machine part at startup, at most three times.
+function Update-DevSetupMachineRetry {
+    param(
+        [Parameter(Mandatory)] [bool] $Needed,
+        [Parameter(Mandatory)] [string] $Arguments
+    )
+    $key = $Script:DevSetupMachineStateKey
+    $task = Get-ScheduledTask -TaskName $Script:DevSetupMachineRetryTask -ErrorAction SilentlyContinue
+    if (-not $Needed) {
+        if ($task) { Unregister-ScheduledTask -TaskName $Script:DevSetupMachineRetryTask -Confirm:$false }
+        if (Test-Path -LiteralPath $key) { Remove-ItemProperty -LiteralPath $key -Name 'MachineRetries' -ErrorAction SilentlyContinue }
+        return $false
+    }
+    # New-Item -Force on an existing key deletes its values, so create it only when missing.
+    if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force | Out-Null }
+    $retries = [int](Get-Item -LiteralPath $key).GetValue('MachineRetries', 0)
+    if ($retries -ge 3) {
+        if ($task) { Unregister-ScheduledTask -TaskName $Script:DevSetupMachineRetryTask -Confirm:$false }
+        return $false
+    }
+    New-ItemProperty -LiteralPath $key -Name 'MachineRetries' -Value ($retries + 1) -PropertyType DWord -Force | Out-Null
+    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $action = New-ScheduledTaskAction -Execute $shell -Argument $Arguments
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName $Script:DevSetupMachineRetryTask -Action $action -Trigger $trigger -Principal $principal `
+        -Settings $settings -Description 'Windows Dev Config (offline): reruns flagged machine setup steps' -Force | Out-Null
+    return $true
 }
 
 #endregion

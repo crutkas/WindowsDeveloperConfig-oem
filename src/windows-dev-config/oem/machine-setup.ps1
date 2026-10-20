@@ -382,6 +382,20 @@ try {
     $failure = $_
 }
 
+# Flagged or failed steps run again, as SYSTEM at each startup, until they pass (up to three times).
+$retryArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-WindowStyle', 'Hidden',
+    '-File', "`"$PSCommandPath`"", '-KitRoot', "`"$KitRoot`"")
+if ($PerUserApps) { $retryArguments += '-PerUserApps' }
+if ($AllowUnsigned) { $retryArguments += '-AllowUnsigned' }
+try {
+    $retry = Update-DevSetupMachineRetry -Needed:([bool]$failure -or $Script:DevConfigTally.Warned -gt 0) -Arguments ($retryArguments -join ' ')
+    if ($retry) {
+        Add-DevConfigNote -Message 'The flagged steps run again automatically, hidden, at the next startup.'
+    }
+} catch {
+    Write-Host "  Could not schedule the retry: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
 Write-DevSetupSummary -Name 'Calm OS machine setup' -Failure $failure
 Save-DevSetupResult -Path (Join-Path $offlineRoot 'machine-setup-result.json') -Failure $failure
 Stop-DevConfigLog

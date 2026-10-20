@@ -49,6 +49,7 @@ administrator in audit mode (Option B). It never restarts Windows.
 | WSL | Turns on Virtual Machine Platform and Windows Subsystem for Linux, and installs the WSL MSI. |
 | Default user profile | Writes the per-user settings that every new account starts with: the File Explorer settings (file extensions, hidden files, full path in the title bar, open to This PC, no frequent folders or files, no sync tips, Details pane), the taskbar and Start settings (End Task, no recommendations, no account notifications), dark mode, the Oh My Posh line in the PowerShell 7 profile, the WSL first-run flag, and PowerToys' always-on-top notification turned off. |
 | First sign-in | Registers `user-setup.ps1` with Active Setup. |
+| Retry | If a step is flagged, registers the `WindowsDevConfig-OfflineMachineRetry` scheduled task, which runs the machine part again as SYSTEM, hidden, at the next startup, up to three times. The task removes itself once every step passes. |
 
 ### Per user: `user-setup.ps1`
 
@@ -92,7 +93,7 @@ flowchart TD
 | `download.ps1` | Once, on a technician PC | Any user | Required |
 | `machine-setup.ps1` | Once per device or image | SYSTEM or an administrator | Not used |
 | `SetupComplete.cmd` | Windows runs it at the end of setup | SYSTEM | Not used |
-| `build-media.ps1` | Optional (Option C), on the technician PC | Any user | Not used |
+| `build-media.ps1` | Optional (Option C), on the technician PC | Any user (an administrator for `-UsbDrive`) | Not used |
 | `user-setup.ps1` | Once per user, at first sign-in, hidden | That user, never elevated | Not used |
 
 Both setup scripts load the Microsoft-signed Windows Dev Config steps from the kit, so every
@@ -229,15 +230,25 @@ customer's account after OOBE. You do not need `SetupComplete.cmd` with this opt
 ### Option C: installation media (USB drive)
 
 This is Option A delivered on bootable media: the same `SetupComplete.cmd` flow, so the same
-OEM product key limit applies. It needs no DISM, no elevation, and no change to the Windows
-image. From the folder that contains this README, after Step 1:
+OEM product key limit applies. The Windows image itself is not changed. `build-media.ps1` makes
+the media in one of three ways. Run it from the folder that contains this README, after Step 1:
 
-```powershell
-powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\build-media.ps1 `
-    -IsoPath D:\iso\Win11_x64.iso -OutputPath D:\iso\Win11_x64_devsetup.iso
-```
+| Goal | Command | Needs |
+|---|---|---|
+| A bootable ISO (for Hyper-V, Rufus, or a lab image server) | `.\build-media.ps1 -IsoPath D:\iso\Win11_x64.iso -OutputPath D:\iso\Win11_x64_devsetup.iso` | Any user |
+| A new FAT32 USB drive from an ISO | `.\build-media.ps1 -IsoPath D:\iso\Win11_x64.iso -UsbDrive E:` | Elevated PowerShell, 16 GB or larger USB drive |
+| Add the kit to a USB drive that already installs Windows (for example, from the Media Creation Tool) | `.\build-media.ps1 -AddToUsb E:` | Any user, about 3.5 GB free on the drive |
 
-`build-media.ps1` copies the Windows ISO and adds:
+- `-UsbDrive` **erases the drive** after you type `ERASE` to confirm (`-Force` skips the prompt),
+  formats it FAT32 (up to
+  32 GB), and copies the ISO. FAT32 cannot hold files larger than 4 GB, so it splits
+  `sources\install.wim` into `install.swm` files with DISM; Windows Setup reads them as is. FAT32
+  drives boot on every UEFI PC without extra boot helpers.
+- `-AddToUsb` keeps everything on the drive. It merges the WSL step into an existing
+  `autounattend.xml` (saving the original as `autounattend.xml.bak`) and asks for `-Force` before
+  it replaces an existing `sources\$OEM$` folder.
+
+`build-media.ps1` adds:
 
 | Path on the media | What Windows Setup does with it |
 |---|---|
@@ -247,13 +258,9 @@ powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\build-media.ps1 `
 
 - Windows Setup and OOBE stay interactive. To automate them, pass your own answer file with
   `-AnswerFile`; `build-media.ps1` adds its WSL step to it.
-- The ISO is about 10 GB and boots on UEFI PCs (Windows 11 requires UEFI).
-- **Writing it to a USB drive:** `sources\install.wim` is larger than 4 GB, which FAT32 cannot
-  hold. [Rufus](https://rufus.ie) handles this: select the ISO and keep its defaults (NTFS with
-  its UEFI boot helper). Alternatively, split the image with
-  `Dism /Split-Image /ImageFile:install.wim /SWMFile:install.swm /FileSize:3800` and copy the
-  files to a FAT32 drive.
-- Booting the ISO in a Hyper-V Gen 2 VM tests exactly what the USB drive does; see
+- The ISO is about 10 GB and boots on UEFI PCs (Windows 11 requires UEFI). To write it to a USB
+  drive with another tool, [Rufus](https://rufus.ie) with its defaults works.
+- Booting the ISO in a Hyper-V Gen 2 VM tests the same files the USB drive uses; see
   [Testing the kit in Hyper-V](#testing-the-kit-in-hyper-v).
 
 Keep `C:\setup\devsetup` in the image until `machine-setup.ps1` has run. After that,
@@ -303,7 +310,9 @@ Logs:
 ## Troubleshooting
 
 - **Run the machine part again:** run the audit-mode command from an elevated PowerShell. Steps
-  that are done report `already OK`.
+  that are done report `already OK`. If the machine part flagged a step, it already runs again at
+  each startup (up to three times) through the `WindowsDevConfig-OfflineMachineRetry` task;
+  `C:\ProgramData\CalmOS-Offline\machine-setup-log.txt` shows each run.
 - **Run the user part again** (signed in as that user, not elevated). Run from a console, it shows
   the same output it writes to its log:
 
