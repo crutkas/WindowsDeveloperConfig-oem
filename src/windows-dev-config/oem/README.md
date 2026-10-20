@@ -28,6 +28,48 @@ The kit reproduces the standard setup (`-Action Partial`):
 | Copilot | GitHub Copilot profile in Terminal; win-dev-skills marketplace and WinUI plugin |
 | WSL | WSL installed and Ubuntu registered; Ubuntu asks for a Linux user name the first time it opens |
 
+## Machine-wide and per-user work
+
+The kit splits that work in two. Everything that can be done for the whole PC is done once,
+before OOBE. Only what Windows stores in each user's own profile is done per user, hidden, at
+that user's first sign-in.
+
+### Machine-wide: `machine-setup.ps1`
+
+Runs once per PC, before OOBE: as SYSTEM from `SetupComplete.cmd` (Options A and C) or as an
+administrator in audit mode (Option B). It never restarts Windows.
+
+| Area | What it does |
+|---|---|
+| Kit and setup files | Restricts `C:\setup` and the kit to administrators and SYSTEM. Installs the signed Windows Dev Config scripts to `C:\ProgramData\CalmOS`, where the online setup keeps them, and copies the files each user needs to `C:\ProgramData\CalmOS-Offline`. |
+| Apps for all users | Installs from the kit with each installer's silent switches: Git, GitHub CLI, Azure CLI, GitHub Copilot CLI, VS Code, .NET 10 SDK, Python 3.14, VC++ Redistributable, uv, Node.js LTS, NVM for Windows, Coreutils, and PowerToys. |
+| MSIX apps | Windows Terminal, Intelligent Terminal, PowerShell 7, App Installer (WinGet), Oh My Posh, and winapp CLI. Option B provisions them for all users. Options A and C stage them in `C:\ProgramData\CalmOS-Offline` for each user's first sign-in, because Windows drops MSIX provisioning made during OOBE. |
+| System settings | Win32 long paths. |
+| Fonts | Cascadia Code NF and Cascadia Mono NF, for all users. |
+| WSL | Turns on Virtual Machine Platform and Windows Subsystem for Linux, and installs the WSL MSI. |
+| Default user profile | Writes the per-user settings that every new account starts with: the File Explorer settings (file extensions, hidden files, full path in the title bar, open to This PC, no frequent folders or files, no sync tips, Details pane), the taskbar and Start settings (End Task, no recommendations, no account notifications), dark mode, the Oh My Posh line in the PowerShell 7 profile, the WSL first-run flag, and PowerToys' always-on-top notification turned off. |
+| First sign-in | Registers `user-setup.ps1` with Active Setup. |
+
+### Per user: `user-setup.ps1`
+
+Runs once per account at its first sign-in, through Active Setup: as that user, never elevated,
+with no window and no network. Explorer waits for it before it shows the desktop, so it is done
+when the desktop appears.
+
+| Area | What it does |
+|---|---|
+| MSIX apps | Installs them for this user from the staged copy (Options A and C) or registers the provisioned ones (Option B), and makes sure their commands (`wt`, `pwsh`, `winget`, `oh-my-posh`, `winapp`) work. |
+| PowerToys | Registers its identity package with its app folder, so PowerToys Settings, Image Resizer, Advanced Paste, and the Command Palette extension start. |
+| Coreutils | Adds Coreutils' command hook (`ls` and the other Coreutils commands) to the PowerShell 7 profile, using Coreutils' own script. |
+| Windows Terminal | Sets PowerShell 7 as the default profile and Cascadia Mono NF as the font, and adds the GitHub Copilot profile. |
+| GitHub Copilot CLI | Adds the win-dev-skills marketplace (from GitHub when the PC is online, otherwise the local copy) and installs the WinUI plugin. |
+| Ubuntu | Registers Ubuntu in WSL from the local image. Ubuntu asks for a Linux user name the first time it opens. |
+| Settings check | Checks every Default user profile setting above and puts back any that Windows reset during the first sign-in (Windows resets dark mode, for example). |
+
+These items are per user because Windows keeps them in each user's profile: MSIX app
+registrations, Terminal settings, the PowerShell profile, Copilot's configuration, and WSL
+distributions. Windows creates that profile only at the user's first sign-in.
+
 ## How it works
 
 ```mermaid
@@ -96,6 +138,30 @@ The kit folder contains:
 | `wsl\` | WSL MSI and the Ubuntu image (`.wsl`) |
 | `copilot\` | Terminal icon and an offline copy of the win-dev-skills marketplace with the WinUI plugin |
 | `machine-setup.ps1`, `user-setup.ps1`, `_oem.ps1`, `SetupComplete.cmd`, `README.md` | The kit scripts and this guide |
+
+### What download.ps1 downloads
+
+When it finishes, `download.ps1` prints a table of every item with its version, source, and size.
+Run `.\download.ps1 -List` to show that table again for an existing kit. The kit is about 3 GB.
+
+| Item | Source | Version |
+|---|---|---|
+| Windows Dev Config scripts (Microsoft-signed) | github.com/microsoft/WindowsDeveloperConfig | The commit that `aka.ms/devconfig/standard/setup.ps1` pins |
+| App Installer (WinGet), with its dependencies and license | github.com/microsoft/winget-cli releases | Pinned by the standard setup; SHA-256 checked |
+| 18 standard packages, each with its WinGet manifest and any MSIX dependencies | WinGet, with `winget download` | Latest in WinGet when `download.ps1` runs; the machine-wide installer when the package has one |
+| Cascadia Code fonts | github.com/microsoft/cascadia-code releases | Pinned by the standard setup; SHA-256 checked |
+| Windows Subsystem for Linux (MSI) | github.com/microsoft/WSL releases | Latest release; must be Microsoft-signed |
+| Ubuntu (`.wsl` image) | releases.ubuntu.com, from WSL's own distribution list | WSL's current default Ubuntu; SHA-256 checked |
+| win-dev-skills marketplace and its WinUI plugin | github.com/microsoft/win-dev-skills and microsoft/winappCli | The marketplace's main branch and the plugin commit it pins |
+| GitHub Copilot Terminal icon | github.githubassets.com | |
+
+The 18 packages, by WinGet ID: Microsoft.WindowsTerminal, Microsoft.IntelligentTerminal,
+Microsoft.PowerShell, Git.Git, GitHub.cli, Microsoft.AzureCLI, GitHub.Copilot,
+Microsoft.VisualStudioCode, Microsoft.DotNet.SDK.10, Python.Python.3.14,
+Microsoft.VCRedist.2015+.x64 (`.arm64` on Arm64), astral-sh.uv, OpenJS.NodeJS.LTS,
+CoreyButler.NVMforWindows, Microsoft.Coreutils, JanDeDobbeleer.OhMyPosh, Microsoft.WinAppCli,
+and Microsoft.PowerToys. The list comes from the signed scripts, so it follows the standard
+setup.
 
 ## Step 2: Add the kit to the image
 
@@ -202,35 +268,19 @@ Keep `C:\setup\devsetup` in the image until `machine-setup.ps1` has run. After t
 
 ## Step 3: What happens on the device
 
-1. **Machine part** (SYSTEM via `SetupComplete.cmd`, or already done in audit mode):
-   - Restricts `C:\setup` and the kit so only administrators and SYSTEM can change them (users can still read them), and refuses to run from a folder that other users could replace.
-   - Installs the signed payload to `C:\ProgramData\CalmOS`, where the online setup also keeps it.
-   - Provisions App Installer and the MSIX packages for every user (from `SetupComplete.cmd` it
-     stages them for each user's first sign-in instead), runs the other installers machine-wide
-     with silent switches, sets long paths, installs the fonts, turns on WSL, and installs the WSL
-     MSI.
-   - Writes the user's File Explorer, taskbar, Start, dark mode, Oh My Posh prompt, WSL, and
-     PowerToys settings into the Default user profile, so every account Windows creates from it,
-     including the one made in OOBE, starts with them.
-   - Copies the per-user files to `C:\ProgramData\CalmOS-Offline` and registers
-     `user-setup.ps1` with Active Setup. It never restarts Windows.
-2. **OOBE:** the customer goes through OOBE as normal.
-3. **First sign-in:** Explorer runs the Active Setup entry once for that user, hidden, and waits
-   for it before it shows the desktop. Meanwhile Windows keeps its own "This might take a few
-   minutes" screen up, so the user sees nothing from the kit:
-   - It installs or registers Terminal, PowerShell 7, WinGet, and the other apps for this user
-     (including their `pwsh`, `oh-my-posh`, and `winapp` commands), configures Terminal, adds the
-     Copilot profile, marketplace, and WinUI plugin, and adds Ubuntu.
-   - It checks every per-user setting from the standard setup and fixes any that Windows reset
-     during the first sign-in (Windows resets dark mode, for example).
-   - This took about 70 seconds in testing when the apps were provisioned for all users, and about
-     2 minutes when `SetupComplete.cmd` left them to install per user.
-   - If a step cannot finish yet, for example because WSL needs a restart, the script runs again,
-     hidden, at the next sign-in (up to three times).
-4. **Every later user** on the PC gets the same per-user setup, hidden, at their first sign-in.
+[Machine-wide and per-user work](#machine-wide-and-per-user-work) lists everything each part
+does. In order:
 
-If the PC is online at first sign-in, the Copilot marketplace is registered from GitHub exactly
-like the online setup. Otherwise the kit's copy is used.
+1. **Before OOBE:** `SetupComplete.cmd` runs the machine part as SYSTEM while Windows shows
+   "Just a moment" (Options A and C). In Option B it already ran in audit mode.
+2. **OOBE:** the customer goes through OOBE as normal and creates their account from the
+   prepared Default user profile.
+3. **First sign-in:** the per-user part runs hidden while Windows keeps its own "This might take
+   a few minutes" screen up, so the user sees nothing from the kit. It took about 70 seconds in
+   testing when the MSIX apps were provisioned for all users, and about 2 minutes when they
+   installed per user. If a step cannot finish yet (for example, because WSL needs a restart), the
+   script runs again, hidden, at the next sign-in, up to three times.
+4. **Every later user** on the PC gets the same per-user setup, hidden, at their first sign-in.
 
 ## Verify a device
 

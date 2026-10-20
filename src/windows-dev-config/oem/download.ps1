@@ -23,6 +23,10 @@
 
 .EXAMPLE
   .\download.ps1 -Destination D:\kits\devsetup -Architecture arm64
+
+.EXAMPLE
+  .\download.ps1 -List
+  Shows every item in an existing kit with its version, source, and size (also printed at the end of a download).
 #>
 
 [CmdletBinding()]
@@ -31,7 +35,9 @@ param(
     [ValidateSet('x64', 'arm64')] [string] $Architecture = 'x64',
     # Normally read from the standard launcher so the kit matches what the online setup runs today.
     [ValidatePattern('^[0-9a-f]{40}$')] [string] $PayloadRef,
-    [string] $StandardLauncherUri = 'https://aka.ms/devconfig/standard/setup.ps1'
+    [string] $StandardLauncherUri = 'https://aka.ms/devconfig/standard/setup.ps1',
+    # Lists what an existing kit in -Destination contains, without downloading anything.
+    [switch] $List
 )
 
 $ErrorActionPreference = 'Stop'
@@ -169,9 +175,68 @@ function Save-DevSetupWingetPackage {
     throw "winget could not download $Id ($($attempts -join '; ')). Last output: $output"
 }
 
+function Get-DevSetupDownloadSize {
+    param(
+        [Parameter(Mandatory)] [string] $Root,
+        [string[]] $Relative
+    )
+    $bytes = 0
+    foreach ($item in @($Relative | Where-Object { $_ })) {
+        $path = Join-Path $Root $item
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $bytes += if ((Get-Item -LiteralPath $path).PSIsContainer) {
+            [int64](Get-ChildItem -LiteralPath $path -Recurse -File | Measure-Object -Property Length -Sum).Sum
+        } else {
+            (Get-Item -LiteralPath $path).Length
+        }
+    }
+    return $bytes
+}
+
+# One row per downloaded item, read back from the kit's devsetup.json.
+function Write-DevSetupDownloadList {
+    param([Parameter(Mandatory)] [string] $Root)
+    $kit = Read-DevSetupManifest -Root $Root
+    $rows = @(
+        [pscustomobject]@{ Item = 'Windows Dev Config scripts (signed)'; Version = $kit.PayloadRef.Substring(0, 12)
+            From = 'github.com/microsoft/WindowsDeveloperConfig'; Files = @('payload') }
+        [pscustomobject]@{ Item = 'App Installer (WinGet)'; Version = $kit.WinGet.Version
+            From = 'github.com/microsoft/winget-cli releases'; Files = @('winget') }
+        foreach ($package in @($kit.Packages)) {
+            [pscustomobject]@{
+                Item = $(if ($package.PackageName) { $package.PackageName } else { $package.Name })
+                Version = $package.Version; From = "WinGet: $($package.Id)"
+                Files = @($package.File) + @($package.Dependencies | Where-Object { $_ })
+            }
+        }
+        [pscustomobject]@{ Item = 'Cascadia Code fonts'; Version = ($kit.Fonts.File -replace '^.*CascadiaCode-|\.zip$', '')
+            From = 'github.com/microsoft/cascadia-code releases'; Files = @($kit.Fonts.File) }
+        [pscustomobject]@{ Item = 'Windows Subsystem for Linux'; Version = $kit.Wsl.Version
+            From = 'github.com/microsoft/WSL releases'; Files = @($kit.Wsl.File) }
+        [pscustomobject]@{ Item = $kit.Ubuntu.Name; Version = ([regex]::Match($kit.Ubuntu.File, '\d+\.\d+(\.\d+)?')).Value
+            From = ([Uri]$kit.Ubuntu.Url).Host; Files = @($kit.Ubuntu.File) }
+        [pscustomobject]@{ Item = "$($kit.Copilot.MarketplaceName) marketplace + WinUI plugin"; Version = ''
+            From = 'github.com/microsoft/win-dev-skills, microsoft/winappCli'; Files = @($kit.Copilot.Marketplace) }
+        [pscustomobject]@{ Item = 'GitHub Copilot icon'; Version = ''
+            From = 'github.githubassets.com'; Files = @($kit.Copilot.Icon) }
+    )
+    $table = $rows | Select-Object Item, Version, From,
+        @{ Name = 'Size'; Expression = { '{0:N0} MB' -f [Math]::Max(1, (Get-DevSetupDownloadSize -Root $Root -Relative $_.Files) / 1MB) } } |
+        Format-Table -AutoSize | Out-String -Width 200
+    Write-Host ''
+    Write-Host "What this kit contains ($($kit.Architecture), created $($kit.CreatedUtc)):" -ForegroundColor Cyan
+    Write-Host $table.TrimEnd()
+    Write-Host '  Sizes include MSIX dependencies; the WinGet folder also keeps its dependency archive unpacked.' -ForegroundColor DarkGray
+}
+
 $Destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Destination).TrimEnd('\')
 if ($Destination -notmatch '^[A-Za-z]:\\.+') {
     throw '-Destination must be a folder on a local drive, for example C:\setup\devsetup.'
+}
+
+if ($List) {
+    Write-DevSetupDownloadList -Root $Destination
+    return
 }
 
 Write-Host 'Windows Dev Config offline kit -- download' -ForegroundColor Cyan
@@ -383,6 +448,8 @@ try {
 }
 
 $size = (Get-ChildItem -LiteralPath $Destination -Recurse -File | Measure-Object -Property Length -Sum).Sum
+Write-DevSetupDownloadList -Root $Destination
 Write-Host ''
 Write-Host "Offline kit ready: $Destination ($([Math]::Round($size / 1GB, 2)) GB, $($entries.Count) packages)." -ForegroundColor Green
 Write-Host '  Next: copy this folder to C:\setup\devsetup in the Windows image and follow README.md.' -ForegroundColor DarkGray
+Write-Host '  Run download.ps1 -List at any time to show this list again.' -ForegroundColor DarkGray
