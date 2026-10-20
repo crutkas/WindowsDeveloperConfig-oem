@@ -184,6 +184,69 @@ function Register-DevSetupUserApps {
 }
 
 # Offline, the official step writes the profile without its icon; add the kit's copy of that icon.
+function Get-DevSetupPowerToysSparse {
+    $directory = Join-Path $env:ProgramFiles 'PowerToys'
+    $msix = Join-Path $directory 'PowerToysSparse.msix'
+    if (Test-Path -LiteralPath $msix) {
+        # The identity package's apps (Settings, Image Resizer, Advanced Paste, Command Palette extension) live here.
+        return [pscustomobject]@{ Directory = (Join-Path $directory 'WinUI3Apps'); Msix = $msix }
+    }
+    return $null
+}
+
+# Installed as SYSTEM, PowerToys provisions its identity package without the external location that
+# its Settings, Advanced Paste, and Command Palette extension need. A user install records it.
+function Test-DevSetupPowerToysIdentity {
+    $powerToys = Get-DevSetupPowerToysSparse
+    if (-not $powerToys) { return $true }
+    $package = Get-AppxPackage -Name 'Microsoft.PowerToys.SparseApp' -ErrorAction SilentlyContinue |
+        Sort-Object { [version]$_.Version } -Descending | Select-Object -First 1
+    if (-not $package) { return $false }
+    $repository = 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages'
+    $entry = Get-ItemProperty -LiteralPath (Join-Path $repository $package.PackageFullName) -ErrorAction SilentlyContinue
+    return [bool]($entry -and $entry.PSObject.Properties['PackageRootFolder'] -and
+        ([string]$entry.PackageRootFolder).TrimEnd('\') -ieq $powerToys.Directory.TrimEnd('\'))
+}
+
+function Register-DevSetupPowerToysIdentity {
+    $powerToys = Get-DevSetupPowerToysSparse
+    # Windows refuses to change an existing registration's external location, so remove this user's first.
+    foreach ($package in @(Get-AppxPackage -Name 'Microsoft.PowerToys.SparseApp' -ErrorAction SilentlyContinue)) {
+        Remove-AppxPackage -Package $package.PackageFullName -ErrorAction Stop
+    }
+    Add-AppxPackage -Path $powerToys.Msix -ExternalLocation $powerToys.Directory -ErrorAction Stop
+}
+
+$Script:DevSetupCoreutilsMarker = '60b36fc6-2d59-49df-be51-28dd2f4c3c9a'
+
+function Get-DevSetupCoreutilsDirectory {
+    $directory = Join-Path $env:ProgramFiles 'coreutils'
+    if (Test-Path -LiteralPath (Join-Path $directory 'pwsh-install.ps1')) { return $directory }
+    return $null
+}
+
+# Coreutils' installer adds its typed-command hook to the installing user's PowerShell 7 profile,
+# which is SYSTEM's in the kit, so each user gets it from Coreutils' own script instead.
+function Test-DevSetupCoreutilsProfile {
+    if (-not (Get-DevSetupCoreutilsDirectory)) { return $true }
+    $profilePath = Get-DevConfigPwshProfilePath
+    if (-not $profilePath) { return $false }
+    return ([string](Read-DevConfigTextFile -Path $profilePath)).Contains($Script:DevSetupCoreutilsMarker)
+}
+
+function Install-DevSetupCoreutilsProfile {
+    $directory = Get-DevSetupCoreutilsDirectory
+    $pwsh = Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pwsh) { throw 'pwsh.exe not found; install the PowerShell package first.' }
+    # Its last step records the profile under HKLM for the Coreutils uninstaller, which needs an
+    # administrator; the profile itself is already updated by then, and the step check confirms it.
+    $result = Invoke-DevConfigNativeCommand -FilePath $pwsh.Source -TimeoutSeconds 120 -Arguments @(
+        '-NoProfile', '-NonInteractive', '-File', (Join-Path $directory 'pwsh-install.ps1'),
+        '-Action', 'Install', '-Scope', 'CurrentUser', '-CmdDir', (Join-Path $directory 'cmd')
+    )
+    Write-Verbose "Coreutils profile hook: exit $($result.ExitCode) $($result.Output)"
+}
+
 function Set-DevSetupCopilotTerminalProfile {
     # Offline, the official step's icon download fails and says so; the kit's copy is added below instead.
     Set-DevConfigCopilotTerminalProfile 6>$null
@@ -296,6 +359,12 @@ try {
             New-DevConfigStep -Name 'ProvisionedApps' -Description 'Set up Terminal, PowerShell 7, WinGet, and the other apps for this user' -BestEffort `
                 -Check { Test-DevSetupUserAppsReady } `
                 -Apply { Register-DevSetupUserApps; if (-not (Test-DevSetupUserAppsReady)) { $Script:DevSetupRetryNextSignIn = $true } }
+            New-DevConfigStep -Name 'PowerToysIdentity' -Description 'Register the PowerToys identity package for this user' -BestEffort `
+                -Check { Test-DevSetupPowerToysIdentity } `
+                -Apply { Register-DevSetupPowerToysIdentity }
+            New-DevConfigStep -Name 'CoreutilsProfile' -Description 'Add the Coreutils command hook to the PowerShell 7 profile' -BestEffort `
+                -Check { Test-DevSetupCoreutilsProfile } `
+                -Apply { Install-DevSetupCoreutilsProfile }
             foreach ($setting in $packageSettings) {
                 New-DevConfigRegistryStep -Setting $setting
             }

@@ -241,6 +241,15 @@ Logs:
 - Tools are installed once for the whole PC instead of per user where the online setup would use
   per-user installers (VS Code, PowerToys, GitHub Copilot CLI, uv, and the MSIX apps).
 - NVM for Windows is installed to `%ProgramFiles%\nvm`, so `nvm install` needs an administrator.
+- PowerToys is installed machine-wide. Because the PowerToys installer registers its identity package
+  without its app folder when it runs as SYSTEM, the per-user part registers that package again for
+  each user, so PowerToys Settings, Advanced Paste, and the Command Palette extension work.
+- Coreutils' `ls`-style command hook is added to each user's PowerShell 7 profile with Coreutils'
+  own script at first sign-in. Recording that profile for the Coreutils uninstaller needs an
+  administrator, so uninstalling Coreutils leaves the hook in those profiles.
+- WinGet does not list the GitHub Copilot CLI or Python as WinGet installs, so `winget upgrade`
+  does not update them. Both work: Copilot CLI updates itself, and Python's main uninstall entry
+  belongs to the SYSTEM account that installed it.
 - Versions are the ones current when `download.ps1` ran. The apps update themselves, or with
   `winget upgrade --all`, once the PC is online.
 - When the PC is offline at first sign-in, the win-dev-skills marketplace points at the copy in

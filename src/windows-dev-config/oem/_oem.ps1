@@ -159,14 +159,17 @@ function Install-DevSetupPortable {
         DisplayVersion          = $Entry.Version
         Publisher               = $Entry.Publisher
         InstallLocation         = $packageDir
+        InstallDate             = (Get-Date).ToString('yyyyMMdd')
         UninstallString         = "winget uninstall --product-code $productCode"
         WinGetInstallerType     = 'portable'
         WinGetPackageIdentifier = $Entry.Id
-        WinGetSourceIdentifier  = 'winget'
+        # WinGet matches its portable installs by this exact source identifier.
+        WinGetSourceIdentifier  = $Script:DevSetupPortableSource
     }
     foreach ($name in $values.Keys) {
         New-ItemProperty -LiteralPath $arp -Name $name -Value ([string]$values[$name]) -PropertyType String -Force | Out-Null
     }
+    New-ItemProperty -LiteralPath $arp -Name 'InstallDirectoryCreated' -Value 1 -PropertyType DWord -Force | Out-Null
 }
 
 function Install-DevSetupPackage {
