@@ -33,6 +33,7 @@ Windows PowerShell 5.1 and PowerShell 7.
 | `steps/_security.ps1` | Signature and directory-permission checks. Its signature is verified before loading unless `-AllowUnsigned` is used. |
 | `steps/_*.ps1` | Shared helpers: elevation, reboot and resume, winget, registry, Terminal settings, retry, process execution, console. |
 | `steps/<phase>.ps1` | One file per phase, each exporting a single `Invoke-<Name>Phase` function. |
+| `oem/` | Offline kit for OEM images: `download.ps1` builds it online; `machine-setup.ps1` and `user-setup.ps1` host the phase files offline. `src/tests/oem/unit.ps1` fails if a standard step is not covered; `src/tests/oem/hyperv-e2e.ps1` runs the whole flow in a VM. |
 
 ## The phases
 

@@ -332,6 +332,8 @@ $url = 'https://raw.githubusercontent.com/microsoft/WindowsDeveloperConfig/main/
 
 **Already elevated and want it to stay that way:** `dev-config.ps1 -NoElevate` fails fast instead of prompting.
 
+**Offline, for OEM or factory images.** [`oem/`](oem/README.md) builds a kit with everything the standard experience installs, then sets up a new PC with no network access: a machine-wide part from `SetupComplete.cmd` or audit mode, and a per-user part at each user's first sign-in. See [oem/README.md](oem/README.md).
+
 ## Security
 
 <details>
