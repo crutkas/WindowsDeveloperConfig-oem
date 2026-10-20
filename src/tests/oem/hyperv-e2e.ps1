@@ -15,8 +15,16 @@
     6. Waits for the per-user result, then collects logs, screenshots, and checks over
        PowerShell Direct into -ResultsPath.
 
+  With -UseMedia it tests the README's installation-media option instead: build-media.ps1 builds
+  one bootable ISO from -IsoPath and the kit, and the VM boots only that ISO. The test answer
+  file (disk layout, OOBE, sign-in) goes in as -AnswerFile, so build-media adds its WSL step to
+  it. A test-only probe account reports progress over PowerShell Direct.
+
 .EXAMPLE
   .\hyperv-e2e.ps1 -IsoPath C:\iso\win11.iso
+
+.EXAMPLE
+  .\hyperv-e2e.ps1 -IsoPath C:\iso\win11.iso -UseMedia
 #>
 
 [CmdletBinding()]
@@ -34,7 +42,8 @@ param(
     [int] $ProcessorCount = 4,
     [int] $DiskGB = 128,
     [int] $TimeoutMinutes = 150,
-    [string] $ResultsPath
+    [string] $ResultsPath,
+    [switch] $UseMedia
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,10 +71,28 @@ function New-E2EPassword {
 }
 
 function Get-E2EAnswerFile {
-    param([string] $Password)
+    param([string] $Password, [switch] $Media)
     $user = [Security.SecurityElement]::Escape($UserName)
     $secret = [Security.SecurityElement]::Escape($Password)
     $component = 'processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"'
+    # The media brings the kit itself; only the answer-ISO test needs the specialize copy step.
+    $specialize = if ($Media) { '' } else { @"
+    <component name="Microsoft-Windows-Deployment" $component>
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>cmd.exe /c for %d in (D E F G H I J K L M) do @if exist %d:\devsetup-specialize.cmd call %d:\devsetup-specialize.cmd %d:</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
+"@ }
+    # Test-only administrator for PowerShell Direct, so polling never signs in as the user under test.
+    $probe = if ($Media) { @"
+          <LocalAccount wcm:action="add">
+            <Name>$Script:ProbeUser</Name><Group>Administrators</Group>
+            <Password><Value>$secret</Value><PlainText>true</PlainText></Password>
+          </LocalAccount>
+"@ } else { '' }
     return @"
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -103,15 +130,7 @@ function Get-E2EAnswerFile {
     </component>
   </settings>
   <settings pass="specialize">
-    <component name="Microsoft-Windows-Deployment" $component>
-      <RunSynchronous>
-        <RunSynchronousCommand wcm:action="add">
-          <Order>1</Order>
-          <Path>cmd.exe /c for %d in (D E F G H I J K L M) do @if exist %d:\devsetup-specialize.cmd call %d:\devsetup-specialize.cmd %d:</Path>
-        </RunSynchronousCommand>
-      </RunSynchronous>
-    </component>
-    <component name="Microsoft-Windows-Shell-Setup" $component>
+$specialize    <component name="Microsoft-Windows-Shell-Setup" $component>
       <ComputerName>DEVSETUP-E2E</ComputerName>
       <TimeZone>Pacific Standard Time</TimeZone>
     </component>
@@ -135,7 +154,7 @@ function Get-E2EAnswerFile {
             <Name>$user</Name><Group>Administrators</Group>
             <Password><Value>$secret</Value><PlainText>true</PlainText></Password>
           </LocalAccount>
-        </LocalAccounts>
+$probe        </LocalAccounts>
       </UserAccounts>
       <AutoLogon>
         <Enabled>true</Enabled><Username>$user</Username><LogonCount>1</LogonCount>
@@ -310,9 +329,27 @@ $Script:VerifyScript = {
 
 #region Main
 
+$Script:ProbeUser = 'e2eprobe'
 $password = New-E2EPassword
 Set-Content -LiteralPath (Join-Path $ResultsPath 'credentials.txt') -Value "$UserName / $password"
 $credential = [pscredential]::new($UserName, (ConvertTo-SecureString $password -AsPlainText -Force))
+$probeCredential = [pscredential]::new($Script:ProbeUser, (ConvertTo-SecureString $password -AsPlainText -Force))
+
+function Get-E2EMediaStatus {
+    try {
+        $status = Invoke-Command -VMName $VMName -Credential $probeCredential -ErrorAction Stop -ArgumentList $UserName -ScriptBlock {
+            param($User)
+            @{
+                DevSetupMachine  = [string](Test-Path 'C:\ProgramData\CalmOS-Offline\machine-setup-result.json')
+                DevSetupUser     = [string](Test-Path "C:\Users\$User\AppData\Local\CalmOS\offline-user-setup-result.json")
+                DevSetupUserName = [string](Get-CimInstance Win32_ComputerSystem).UserName
+            }
+        }
+        return $status
+    } catch {
+        return @{}
+    }
+}
 
 Write-E2E "Refreshing kit scripts in $KitPath from $KitSource"
 foreach ($file in @('_oem.ps1', 'machine-setup.ps1', 'user-setup.ps1', 'SetupComplete.cmd', 'README.md')) {
@@ -320,29 +357,38 @@ foreach ($file in @('_oem.ps1', 'machine-setup.ps1', 'user-setup.ps1', 'SetupCom
     if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $KitPath -Force }
 }
 
-$staging = Join-Path $vmDirectory 'answer'
-if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
-New-Item -ItemType Directory -Path $staging | Out-Null
-[IO.File]::WriteAllText((Join-Path $staging 'autounattend.xml'), (Get-E2EAnswerFile -Password $password), [Text.UTF8Encoding]::new($false))
-$specialize = $Script:SpecializeScript + "`r`n"
-$specialize = $specialize.Replace('exit /b 0', @"
-copy /y "%~1\devsetup-e2e-status.ps1" C:\Windows\Temp\devsetup-e2e-status.ps1 >> "%LOG%"
-schtasks.exe /create /f /tn DevSetupE2EStatus /ru SYSTEM /sc onstart /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Windows\Temp\devsetup-e2e-status.ps1" >> "%LOG%"
-exit /b 0
-"@)
-[IO.File]::WriteAllText((Join-Path $staging 'devsetup-specialize.cmd'), $specialize, [Text.Encoding]::ASCII)
-[IO.File]::WriteAllText((Join-Path $staging 'devsetup-e2e-status.ps1'), $Script:StatusScript, [Text.UTF8Encoding]::new($false))
-
 if (Get-VM -Name $VMName -ErrorAction SilentlyContinue) {
     Write-E2E "Removing the previous $VMName VM"
     Stop-VM -Name $VMName -TurnOff -Force -ErrorAction SilentlyContinue
     Remove-VM -Name $VMName -Force
 }
 Get-ChildItem -LiteralPath $vmDirectory -Filter '*.vhdx' -ErrorAction SilentlyContinue | Remove-Item -Force
-$answerIso = Join-Path $vmDirectory 'answer.iso'
-Write-E2E "Building the answer ISO (autounattend.xml + kit) at $answerIso"
-New-E2EIsoImage -StagingPath $staging -KitPath $KitPath -Path $answerIso
-Write-E2E "  $([Math]::Round((Get-Item $answerIso).Length / 1GB, 2)) GB" 'DarkGray'
+
+if ($UseMedia) {
+    $answerPath = Join-Path $vmDirectory 'test-autounattend.xml'
+    [IO.File]::WriteAllText($answerPath, (Get-E2EAnswerFile -Password $password -Media), [Text.UTF8Encoding]::new($false))
+    $bootIso = Join-Path $vmDirectory 'devsetup-media.iso'
+    Write-E2E "Building installation media with build-media.ps1 at $bootIso"
+    & (Join-Path $KitSource 'build-media.ps1') -IsoPath $IsoPath -KitPath $KitPath -OutputPath $bootIso -AnswerFile $answerPath -NoPrompt
+    Remove-Item -LiteralPath $answerPath -Force
+} else {
+    $staging = Join-Path $vmDirectory 'answer'
+    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    [IO.File]::WriteAllText((Join-Path $staging 'autounattend.xml'), (Get-E2EAnswerFile -Password $password), [Text.UTF8Encoding]::new($false))
+    $specialize = $Script:SpecializeScript + "`r`n"
+    $specialize = $specialize.Replace('exit /b 0', @"
+copy /y "%~1\devsetup-e2e-status.ps1" C:\Windows\Temp\devsetup-e2e-status.ps1 >> "%LOG%"
+schtasks.exe /create /f /tn DevSetupE2EStatus /ru SYSTEM /sc onstart /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Windows\Temp\devsetup-e2e-status.ps1" >> "%LOG%"
+exit /b 0
+"@)
+    [IO.File]::WriteAllText((Join-Path $staging 'devsetup-specialize.cmd'), $specialize, [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $staging 'devsetup-e2e-status.ps1'), $Script:StatusScript, [Text.UTF8Encoding]::new($false))
+    $answerIso = Join-Path $vmDirectory 'answer.iso'
+    Write-E2E "Building the answer ISO (autounattend.xml + kit) at $answerIso"
+    New-E2EIsoImage -StagingPath $staging -KitPath $KitPath -Path $answerIso
+    Write-E2E "  $([Math]::Round((Get-Item $answerIso).Length / 1GB, 2)) GB" 'DarkGray'
+}
 
 Write-E2E "Creating VM $VMName (Gen 2, vTPM, nested virtualization, no network)"
 $vm = New-VM -Name $VMName -Generation 2 -MemoryStartupBytes ([int64]$MemoryGB * 1GB) -Path $VMRoot `
@@ -352,8 +398,13 @@ Set-VMProcessor -VM $vm -Count $ProcessorCount -ExposeVirtualizationExtensions $
 Get-VMNetworkAdapter -VM $vm | Remove-VMNetworkAdapter
 Set-VMKeyProtector -VM $vm -NewLocalKeyProtector
 Enable-VMTPM -VM $vm
-$windowsDvd = Add-VMDvdDrive -VM $vm -Path $IsoPath -Passthru
-Add-VMDvdDrive -VM $vm -Path $answerIso | Out-Null
+if ($UseMedia) {
+    # The one disc stands in for the USB drive made from the same ISO.
+    $windowsDvd = Add-VMDvdDrive -VM $vm -Path $bootIso -Passthru
+} else {
+    $windowsDvd = Add-VMDvdDrive -VM $vm -Path $IsoPath -Passthru
+    Add-VMDvdDrive -VM $vm -Path $answerIso | Out-Null
+}
 Set-VMFirmware -VM $vm -FirstBootDevice $windowsDvd
 Set-VM -VM $vm -AutomaticCheckpointsEnabled $false
 
@@ -379,7 +430,7 @@ while ((Get-Date) -lt $deadline) {
         $shot++
         $lastShot = Get-Date
     }
-    $status = Get-E2EGuestStatus
+    $status = if ($UseMedia) { Get-E2EMediaStatus } else { Get-E2EGuestStatus }
     $summary = 'machine={0} user={1} logged-on={2}' -f $status['DevSetupMachine'], $status['DevSetupUser'], $status['DevSetupUserName']
     if ($summary -ne $lastStatus) {
         Write-E2E "  [$([int]((Get-Date) - $started).TotalMinutes) min] $summary" 'DarkGray'

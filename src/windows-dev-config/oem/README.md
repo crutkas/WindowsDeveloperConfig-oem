@@ -36,6 +36,7 @@ flowchart TD
     B --> C{"Machine part:<br/>machine-setup.ps1"}
     C -->|"Option A: SetupComplete.cmd<br/>(SYSTEM, before OOBE)"| D["Machine-wide installs and settings"]
     C -->|"Option B: audit mode<br/>(administrator, before sysprep)"| D
+    C -->|"Option C: USB install media<br/>(SetupComplete.cmd from sources\$OEM$)"| D
     D --> D2["Default user profile:<br/>Explorer, Start, dark mode, prompt settings"]
     D2 --> E["Active Setup entry:<br/>run user-setup.ps1 once per user"]
     F["User finishes OOBE and signs in"] --> G["Explorer runs the Active Setup StubPath as that user<br/>(Windows keeps its 'This might take a few minutes' screen up)"]
@@ -49,6 +50,7 @@ flowchart TD
 | `download.ps1` | Once, on a technician PC | Any user | Required |
 | `machine-setup.ps1` | Once per device or image | SYSTEM or an administrator | Not used |
 | `SetupComplete.cmd` | Windows runs it at the end of setup | SYSTEM | Not used |
+| `build-media.ps1` | Optional (Option C), on the technician PC | Any user | Not used |
 | `user-setup.ps1` | Once per user, at first sign-in, hidden | That user, never elevated | Not used |
 
 Both setup scripts load the Microsoft-signed Windows Dev Config steps from the kit, so every
@@ -102,7 +104,7 @@ Choose one option for the machine part.
 > **Important:** Windows does not run `SetupComplete.cmd` when the device uses an OEM product key,
 > except on Enterprise editions
 > ([Add a Custom Script to Windows Setup](https://learn.microsoft.com/windows-hardware/manufacture/desktop/add-a-custom-script-to-windows-setup)).
-> For devices that ship with an OEM key, use **Option B**.
+> For devices that ship with an OEM key, use **Option B**. Options A and C both depend on `SetupComplete.cmd`.
 
 ### Option A: offline servicing with SetupComplete.cmd
 
@@ -158,6 +160,36 @@ not slower and the OEM product key does not matter.
 The audit-mode Administrator is skipped by `user-setup.ps1`; the per-user part runs for the
 customer's account after OOBE. You do not need `SetupComplete.cmd` with this option.
 
+### Option C: installation media (USB drive)
+
+This is Option A delivered on bootable media: the same `SetupComplete.cmd` flow, so the same
+OEM product key limit applies. It needs no DISM, no elevation, and no change to the Windows
+image. From the folder that contains this README, after Step 1:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\build-media.ps1 `
+    -IsoPath D:\iso\Win11_x64.iso -OutputPath D:\iso\Win11_x64_devsetup.iso
+```
+
+`build-media.ps1` copies the Windows ISO and adds:
+
+| Path on the media | What Windows Setup does with it |
+|---|---|
+| `sources\$OEM$\$1\setup\devsetup\` | Copies the kit to `C:\setup\devsetup` |
+| `sources\$OEM$\$$\Setup\Scripts\SetupComplete.cmd` | Copies it to `C:\Windows\Setup\Scripts\`, so the machine part runs as SYSTEM after setup |
+| `autounattend.xml` | Turns on the WSL features during setup, so Ubuntu works at the first sign-in without a restart |
+
+- Windows Setup and OOBE stay interactive. To automate them, pass your own answer file with
+  `-AnswerFile`; `build-media.ps1` adds its WSL step to it.
+- The ISO is about 10 GB and boots on UEFI PCs (Windows 11 requires UEFI).
+- **Writing it to a USB drive:** `sources\install.wim` is larger than 4 GB, which FAT32 cannot
+  hold. [Rufus](https://rufus.ie) handles this: select the ISO and keep its defaults (NTFS with
+  its UEFI boot helper). Alternatively, split the image with
+  `Dism /Split-Image /ImageFile:install.wim /SWMFile:install.swm /FileSize:3800` and copy the
+  files to a FAT32 drive.
+- Booting the ISO in a Hyper-V Gen 2 VM tests exactly what the USB drive does; see
+  [Testing the kit in Hyper-V](#testing-the-kit-in-hyper-v).
+
 Keep `C:\setup\devsetup` in the image until `machine-setup.ps1` has run. After that,
 `machine-setup.ps1` has copied everything each user needs to `C:\ProgramData\CalmOS-Offline`, so
 `C:\setup\devsetup` can be deleted to save about 3 GB.
@@ -165,7 +197,7 @@ Keep `C:\setup\devsetup` in the image until `machine-setup.ps1` has run. After t
 > **Run the machine part before any user account exists.** Windows runs Active Setup entries only
 > during a profile's *first* sign-in, so accounts that already signed in before
 > `machine-setup.ps1` ran do not get the per-user part automatically. In both options above the
-> customer's account is created later in OOBE, so this happens on its own. For an account that
+> customer's account is created later in OOBE, so this happens on its own (also in Option C). For an account that
 > already exists, run the per-user command in [Troubleshooting](#troubleshooting) once.
 
 ## Step 3: What happens on the device
@@ -267,6 +299,9 @@ not elevation:
 
 ```powershell
 .\src\tests\oem\hyperv-e2e.ps1 -IsoPath D:\iso\Win11_x64.iso -KitPath C:\setup\devsetup
+
+# Option C: build the installation media with build-media.ps1 and boot only that ISO
+.\src\tests\oem\hyperv-e2e.ps1 -IsoPath D:\iso\Win11_x64.iso -KitPath C:\setup\devsetup -UseMedia
 ```
 
 It installs Windows unattended from the ISO, applies the Option A image changes during setup,
