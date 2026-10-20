@@ -201,7 +201,8 @@ function Register-DevSetupUserApps {
 
 # Offline, the official step writes the profile without its icon; add the kit's copy of that icon.
 function Set-DevSetupCopilotTerminalProfile {
-    Set-DevConfigCopilotTerminalProfile
+    # Offline, the official step's icon download fails and says so; the kit's copy is added below instead.
+    Set-DevConfigCopilotTerminalProfile 6>$null
     $fragmentsDir = Get-DevConfigCopilotFragmentDir
     $fragmentPath = Join-Path $fragmentsDir 'github-copilot.fragment.json'
     $fragment = (Read-DevConfigTextFile -Path $fragmentPath) | ConvertFrom-Json
@@ -212,6 +213,7 @@ function Set-DevSetupCopilotTerminalProfile {
         $entry | Add-Member -NotePropertyName icon -NotePropertyValue $icon
         Write-DevConfigTextFile -Path $fragmentPath -Content ($fragment | ConvertTo-Json -Depth 8)
     }
+    Write-Host "Added the 'GitHub Copilot' profile to Windows Terminal."
 }
 
 function Test-DevSetupOnline {

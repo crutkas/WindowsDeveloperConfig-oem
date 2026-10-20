@@ -239,9 +239,10 @@ function Save-E2EScreenshot {
 # Test-only progress reporter: SYSTEM writes guest KVP values the host can read without credentials,
 # so the harness never signs in (which would create the user's profile) before the real first sign-in.
 $Script:StatusScript = @'
-$key = 'HKLM:\SOFTWARE\Microsoft\Virtual Machine\Auto'
+$key = 'HKLM:\SOFTWARE\Microsoft\Virtual Machine\Guest'
 while ($true) {
-    New-Item -Path $key -Force | Out-Null
+    # New-Item -Force on an existing key deletes its values, which also breaks the KVP service's watch.
+    if (-not (Test-Path -Path $key)) { New-Item -Path $key -Force | Out-Null }
     $profiles = @(Get-ChildItem C:\Users -Directory -ErrorAction SilentlyContinue)
     $values = @{
         DevSetupMachine  = [string](Test-Path 'C:\ProgramData\CalmOS-Offline\machine-setup-result.json')

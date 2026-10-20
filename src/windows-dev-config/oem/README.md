@@ -170,9 +170,10 @@ Keep `C:\setup\devsetup` in the image until `machine-setup.ps1` has run. After t
 1. **Machine part** (SYSTEM via `SetupComplete.cmd`, or already done in audit mode):
    - Restricts `C:\setup` and the kit so only administrators and SYSTEM can change them (users can still read them), and refuses to run from a folder that other users could replace.
    - Installs the signed payload to `C:\ProgramData\CalmOS`, where the online setup also keeps it.
-   - Provisions App Installer and the MSIX packages for every user, runs the other installers
-     machine-wide with silent switches, sets long paths, installs the fonts, turns on WSL, and
-     installs the WSL MSI.
+   - Provisions App Installer and the MSIX packages for every user (from `SetupComplete.cmd` it
+     stages them for each user's first sign-in instead), runs the other installers machine-wide
+     with silent switches, sets long paths, installs the fonts, turns on WSL, and installs the WSL
+     MSI.
    - Copies the per-user files to `C:\ProgramData\CalmOS-Offline` and registers
      `user-setup.ps1` with Active Setup. It never restarts Windows.
 2. **OOBE:** the customer goes through OOBE as normal.
