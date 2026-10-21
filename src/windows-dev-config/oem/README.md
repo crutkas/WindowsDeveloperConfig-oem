@@ -365,7 +365,9 @@ not elevation:
 
 It installs Windows unattended from the ISO, applies the Option A image changes during setup,
 completes OOBE with a local account, signs in once, and then saves screenshots, logs, and a
-`verify.json` report. `src\tests\oem\unit.ps1` runs in seconds and fails if the standard setup
+`verify.json` report. The report reads PATH from a new sign-in, as a new terminal sees it, and the
+run fails if any entry still contains an unexpanded variable such as `%NVM_HOME%`.
+`src\tests\oem\unit.ps1` runs in seconds and fails if the standard setup
 gains a step the kit does not cover.
 
 The kit has been run this way on Windows 11 Pro (x64) with no network: Windows Setup,

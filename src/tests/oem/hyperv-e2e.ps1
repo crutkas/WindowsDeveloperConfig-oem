@@ -289,8 +289,11 @@ function Get-E2EGuestStatus {
 
 $Script:VerifyScript = {
     $ErrorActionPreference = 'Continue'
-    $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+    # Keep the PATH Windows built for this PowerShell Direct logon; it is what a new terminal gets.
+    # Rebuilding it with .NET would expand entries such as %NVM_HOME% that Windows leaves literal.
     $report = [ordered]@{}
+    $report.Path = @($env:Path -split ';' | Where-Object { $_ })
+    $report.UnexpandedPathEntries = @($report.Path | Where-Object { $_ -match '%[^%;]+%' })
     $report.MachineResult = Get-Content 'C:\ProgramData\CalmOS-Offline\machine-setup-result.json' -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
     $report.UserResult = Get-Content (Join-Path $env:LOCALAPPDATA 'CalmOS\offline-user-setup-result.json') -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
     $report.Commands = [ordered]@{}
@@ -478,8 +481,20 @@ try {
     if ($session) { Remove-PSSession $session }
 }
 
-Write-E2E "Finished in $elapsed minutes. Results: $ResultsPath" $(if ($done) { 'Green' } else { 'Yellow' })
+$pathOk = $true
+if (-not $report) {
+    $pathOk = $false
+    Write-E2E 'verify.json was not collected, so the PATH check could not run.' 'Red'
+} elseif (@($report.UnexpandedPathEntries).Count -gt 0) {
+    $pathOk = $false
+    Write-E2E "PATH check failed: a new logon's PATH has unexpanded entries: $(@($report.UnexpandedPathEntries) -join '; ')" 'Red'
+} else {
+    Write-E2E "PATH check passed: no unexpanded entries in a new logon's PATH." 'Green'
+}
+
+$passed = $done -and $pathOk
+Write-E2E "Finished in $elapsed minutes. Results: $ResultsPath" $(if ($passed) { 'Green' } else { 'Yellow' })
 Write-E2E "VM $VMName is kept for inspection (password in credentials.txt). Remove it with: Remove-VM $VMName -Force" 'DarkGray'
-if (-not $done) { exit 1 }
+if (-not $passed) { exit 1 }
 
 #endregion
