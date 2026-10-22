@@ -50,7 +50,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 $Script:MicrosoftSigner = 'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
 $Script:Repository      = 'microsoft/WindowsDeveloperConfig'
-$Script:KitFiles        = @('_oem.ps1', 'machine-setup.ps1', 'user-setup.ps1', 'SetupComplete.cmd', 'README.md')
+$Script:KitFiles        = @('_oem.ps1', 'machine-setup.ps1', 'user-setup.ps1', 'uninstall-package.ps1', 'SetupComplete.cmd', 'README.md')
 
 # Installer switches the WinGet manifest does not carry but an unattended machine-wide install needs.
 $Script:PackageOverrides = @{

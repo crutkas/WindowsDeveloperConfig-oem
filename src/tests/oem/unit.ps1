@@ -92,7 +92,7 @@ Assert-Kit ((Get-DevSetupPublisherId -Publisher 'CN=Microsoft Corporation, O=Mic
 #region Device-side scripts stay clear of download and decoding code
 # Offline devices scan these with the image's Defender definitions, which flagged
 # Trojan:PowerShell/DownloadObfus on an earlier version that redirected Invoke-WebRequest.
-foreach ($file in @('_oem.ps1', 'machine-setup.ps1', 'user-setup.ps1')) {
+foreach ($file in @('_oem.ps1', 'machine-setup.ps1', 'user-setup.ps1', 'uninstall-package.ps1')) {
     $text = [IO.File]::ReadAllText((Join-Path $kit $file))
     foreach ($pattern in @('Invoke-WebRequest', 'Invoke-RestMethod', 'DownloadString', 'DownloadFile', 'Net\.WebClient',
             'FromBase64String', 'ConvertFromUtf32', 'EncodedCommand', '\$\{function:', 'Invoke-Expression', '\biex\b')) {
@@ -108,6 +108,14 @@ foreach ($pattern in @('Start-Process', 'Wait-DevConfigKeyPress', 'Invoke-DevCon
 }
 $command = Get-DevSetupUserCommand -ScriptPath 'C:\ProgramData\CalmOS-Offline\user-setup.ps1'
 Assert-Kit ($command -match '-WindowStyle Hidden' -and $command -match '-NonInteractive') 'The Active Setup command must start PowerShell hidden and non-interactive.'
+#endregion
+
+#region Machine-wide uninstall entries point at a helper that ships with the kit
+$downloadText = [IO.File]::ReadAllText((Join-Path $kit 'download.ps1'))
+$machineSetupText = [IO.File]::ReadAllText((Join-Path $kit 'machine-setup.ps1'))
+Assert-Kit ($downloadText -match "KitFiles\s*=\s*@\([^)]*'uninstall-package\.ps1'") 'download.ps1 must copy uninstall-package.ps1 into the kit.'
+Assert-Kit ($machineSetupText -match "function Get-DevSetupUserFiles \{\s*@\([^)]*'uninstall-package\.ps1'") 'machine-setup.ps1 must stage uninstall-package.ps1 with the per-user files.'
+Assert-Kit ($machineSetupText -match "Join-Path \`$offlineRoot 'uninstall-package\.ps1'") 'The moved Installed apps entry must run the staged uninstall-package.ps1.'
 #endregion
 
 #region The sysprep specialize command in the README runs the whole machine part, hidden

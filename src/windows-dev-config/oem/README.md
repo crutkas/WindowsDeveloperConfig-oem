@@ -43,7 +43,7 @@ SYSTEM from the sysprep answer file's specialize pass. It never restarts Windows
 | Area | What it does |
 |---|---|
 | Kit and setup files | Restricts `C:\setup` and the kit to administrators and SYSTEM. Installs the signed Windows Dev Config scripts to `C:\ProgramData\CalmOS`, where the online setup keeps them, and copies the files each user needs to `C:\ProgramData\CalmOS-Offline`. |
-| Apps for all users | Installs from the kit with each installer's silent switches: Git, GitHub CLI, Azure CLI, GitHub Copilot CLI, VS Code, .NET 10 SDK, Python 3.14, VC++ Redistributable, uv, Node.js LTS, NVM for Windows, Coreutils, and PowerToys. |
+| Apps for all users | Installs from the kit with each installer's silent switches: Git, GitHub CLI, Azure CLI, GitHub Copilot CLI, VS Code, .NET 10 SDK, Python 3.14, VC++ Redistributable, uv, Node.js LTS, NVM for Windows, Coreutils, and PowerToys. Moves Python's Installed apps entry to the machine-wide list, so every user can see and uninstall it. |
 | MSIX apps | Windows Terminal, Intelligent Terminal, PowerShell 7, App Installer (WinGet), Oh My Posh, and winapp CLI. In every option they are staged in `C:\ProgramData\CalmOS-Offline` (`-PerUserApps`) and installed at each user's first sign-in, because Windows drops provisioned Store app bundles when OOBE deletes its temporary setup account. |
 | System settings | Win32 long paths. |
 | Fonts | Cascadia Code NF and Cascadia Mono NF, for all users. |
@@ -96,6 +96,7 @@ flowchart TD
 | `SetupComplete.cmd` | Windows runs it at the end of setup | SYSTEM | Not used |
 | `build-media.ps1` | Optional (Option C), on the technician PC | Any user (an administrator for `-UsbDrive`) | Not used |
 | `user-setup.ps1` | Once per user, at first sign-in, hidden | That user, never elevated | Not used |
+| `uninstall-package.ps1` | When someone uninstalls Python from Installed apps | An administrator (it asks for approval) | Not used |
 
 Both setup scripts load the Microsoft-signed Windows Dev Config steps from the kit, so every
 setting, check, and line of console output matches the online setup. Only downloads are replaced
@@ -139,7 +140,7 @@ The kit folder contains:
 | `fonts\` | Cascadia Code release |
 | `wsl\` | WSL MSI and the Ubuntu image (`.wsl`) |
 | `copilot\` | Terminal icon and an offline copy of the win-dev-skills marketplace with the WinUI plugin |
-| `machine-setup.ps1`, `user-setup.ps1`, `_oem.ps1`, `SetupComplete.cmd`, `README.md` | The kit scripts and this guide |
+| `machine-setup.ps1`, `user-setup.ps1`, `uninstall-package.ps1`, `_oem.ps1`, `SetupComplete.cmd`, `README.md` | The kit scripts and this guide |
 
 ### What download.ps1 downloads
 
@@ -388,9 +389,14 @@ Logs:
 - Coreutils' `ls`-style command hook is added to each user's PowerShell 7 profile with Coreutils'
   own script at first sign-in. Recording that profile for the Coreutils uninstaller needs an
   administrator, so uninstalling Coreutils leaves the hook in those profiles.
-- WinGet does not list the GitHub Copilot CLI or Python as WinGet installs, so `winget upgrade`
-  does not update them. Both work: Copilot CLI updates itself, and Python's main uninstall entry
-  belongs to the SYSTEM account that installed it.
+- WinGet does not list the GitHub Copilot CLI as a WinGet install, so `winget upgrade` does not
+  update it; Copilot CLI updates itself.
+- Python's installer records its Installed apps entry only for the account that runs it, which is
+  SYSTEM (or the audit-mode administrator) here. The machine part moves that entry to the
+  machine-wide list, so every user sees **Python 3.14** in Settings > Apps > Installed apps.
+  Uninstalling it there asks for administrator approval, runs Python's own uninstaller from a copy
+  kept in `C:\ProgramData\CalmOS-Offline\uninstall`, and removes the entry. As with any Python
+  install, Python Launcher stays until it is uninstalled separately.
 - Versions are the ones current when `download.ps1` ran. The apps update themselves, or with
   `winget upgrade --all`, once the PC is online.
 - When the PC is offline at first sign-in, the win-dev-skills marketplace points at the copy in

@@ -513,7 +513,7 @@ function Invoke-E2EAuditMode {
 }
 
 Write-E2E "Refreshing kit scripts in $KitPath from $KitSource"
-foreach ($file in @('_oem.ps1', 'machine-setup.ps1', 'user-setup.ps1', 'SetupComplete.cmd', 'README.md')) {
+foreach ($file in @('_oem.ps1', 'machine-setup.ps1', 'user-setup.ps1', 'uninstall-package.ps1', 'SetupComplete.cmd', 'README.md')) {
     $source = Join-Path $KitSource $file
     if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $KitPath -Force }
 }

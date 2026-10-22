@@ -224,7 +224,7 @@ function Install-DevSetupWslComponents {
 }
 
 function Get-DevSetupUserFiles {
-    @('user-setup.ps1', '_oem.ps1', $Script:DevSetupManifestName) + @($manifest.UserFiles)
+    @('user-setup.ps1', '_oem.ps1', 'uninstall-package.ps1', $Script:DevSetupManifestName) + @($manifest.UserFiles)
 }
 
 function Test-DevSetupUserFilesCurrent {
@@ -314,6 +314,57 @@ function Get-DevSetupSysprepBlockers {
     })
 }
 
+# Python's installer records its Installed apps entry only for the account that runs it (SYSTEM here,
+# or the audit-mode administrator), so no user could see or uninstall it. Those entries move to the
+# machine-wide list; uninstalling runs uninstall-package.ps1 with a protected copy of the bundle.
+$Script:DevSetupUninstallRoot = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+function Get-DevSetupUserBundleEntries {
+    @(foreach ($entry in @($manifest.Packages)) {
+        if (-not $entry.PSObject.Properties['InstallerType'] -or $entry.InstallerType -ne 'burn') { continue }
+        if (-not $entry.PSObject.Properties['Detection'] -or -not $entry.Detection.PSObject.Properties['ProductCodes']) { continue }
+        foreach ($code in @($entry.Detection.ProductCodes | Where-Object { $_ -match '^\{[0-9A-Fa-f-]{36}\}$' })) {
+            $key = "HKCU:\$Script:DevSetupUninstallRoot\$code"
+            if (Test-Path -LiteralPath $key) { [pscustomobject]@{ Id = $entry.Id; Code = $code; Key = $key } }
+        }
+    })
+}
+
+function Publish-DevSetupBundleEntry {
+    param([Parameter(Mandatory)] $Bundle)
+    $source = Get-Item -LiteralPath $Bundle.Key
+    $cached = [string]$source.GetValue('BundleCachePath')
+    # A 32-bit bundle engine running as SYSTEM records System32 but writes to SysWOW64.
+    if (-not (Test-Path -LiteralPath $cached)) { $cached = $cached -ireplace '\\system32\\', '\SysWOW64\' }
+    if (-not (Test-Path -LiteralPath $cached)) { throw "The cached $($Bundle.Id) uninstaller is missing: $cached" }
+    $folder = Join-Path $offlineRoot "uninstall\$($Bundle.Code)"
+    New-Item -ItemType Directory -Path $folder -Force | Out-Null
+    Copy-Item -LiteralPath $cached -Destination $folder -Force
+    $bundleCopy = Join-Path $folder (Split-Path -Leaf $cached)
+
+    $target = "HKLM:\$Script:DevSetupUninstallRoot\$($Bundle.Code)"
+    if (-not (Test-Path -LiteralPath $target)) { New-Item -Path $target | Out-Null }
+    foreach ($name in $source.GetValueNames()) {
+        if (-not $name -or $name -in @('UninstallString', 'QuietUninstallString', 'ModifyPath', 'NoElevateOnModify', 'BundleCachePath', 'DisplayIcon')) { continue }
+        New-ItemProperty -LiteralPath $target -Name $name -PropertyType $source.GetValueKind($name).ToString() -Force `
+            -Value $source.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) | Out-Null
+    }
+    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $uninstall = "`"$shell`" -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File `"$(Join-Path $offlineRoot 'uninstall-package.ps1')`" -ProductCode $($Bundle.Code)"
+    $values = [ordered]@{
+        UninstallString      = $uninstall
+        QuietUninstallString = "$uninstall -Quiet"
+        BundleCachePath      = $bundleCopy
+        DisplayIcon          = "$bundleCopy,0"
+    }
+    foreach ($name in $values.Keys) {
+        New-ItemProperty -LiteralPath $target -Name $name -Value $values[$name] -PropertyType String -Force | Out-Null
+    }
+    foreach ($name in 'NoModify', 'NoRepair') {
+        New-ItemProperty -LiteralPath $target -Name $name -Value 1 -PropertyType DWord -Force | Out-Null
+    }
+    Remove-Item -LiteralPath $Bundle.Key -Recurse -Force
+}
+
 $total = 7
 $failure = $null
 Write-Host ''
@@ -362,6 +413,10 @@ try {
                     -Check { @(Get-DevSetupSysprepBlockers).Count -eq 0 } `
                     -Apply { Get-DevSetupSysprepBlockers | ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName -AllUsers } }
             }
+            New-DevConfigStep -Name 'InstalledAppsEntries' -BestEffort `
+                -Description 'List Python in Installed apps for every user, so any administrator can uninstall it' `
+                -Check { @(Get-DevSetupUserBundleEntries).Count -eq 0 } `
+                -Apply { Get-DevSetupUserBundleEntries | ForEach-Object { Publish-DevSetupBundleEntry -Bundle $_ } }
         )
     }
 
