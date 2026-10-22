@@ -20,11 +20,19 @@
   file (disk layout, OOBE, sign-in) goes in as -AnswerFile, so build-media adds its WSL step to
   it. A test-only probe account reports progress over PowerShell Direct.
 
+  With -AuditMode it tests the README's audit-mode option mixed with the specialize pass: Windows
+  installs into audit mode, the audit-mode Administrator runs machine-setup.ps1 -Skip <AuditSkip>
+  twice (with a restart between), and sysprep generalizes with an answer file whose specialize
+  pass runs machine-setup.ps1 hidden, which installs the skipped packages as SYSTEM before OOBE.
+
 .EXAMPLE
   .\hyperv-e2e.ps1 -IsoPath C:\iso\win11.iso
 
 .EXAMPLE
   .\hyperv-e2e.ps1 -IsoPath C:\iso\win11.iso -UseMedia
+
+.EXAMPLE
+  .\hyperv-e2e.ps1 -IsoPath C:\iso\win11.iso -AuditMode -AuditSkip Python
 #>
 
 [CmdletBinding()]
@@ -43,12 +51,15 @@ param(
     [int] $DiskGB = 128,
     [int] $TimeoutMinutes = 150,
     [string] $ResultsPath,
-    [switch] $UseMedia
+    [switch] $UseMedia,
+    [switch] $AuditMode,
+    [string[]] $AuditSkip = @('Python')
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $ProgressPreference = 'SilentlyContinue'
+if ($UseMedia -and $AuditMode) { throw 'Use either -UseMedia or -AuditMode, not both.' }
 
 if (-not $KitSource) { $KitSource = Join-Path $PSScriptRoot '..\..\windows-dev-config\oem' }
 $KitSource = (Resolve-Path -LiteralPath $KitSource).Path
@@ -71,21 +82,27 @@ function New-E2EPassword {
 }
 
 function Get-E2EAnswerFile {
-    param([string] $Password, [switch] $Media)
+    # Media: build-media.ps1 brings the kit. Audit: install into audit mode. Sysprep: the answer file
+    # passed to sysprep /generalize, whose specialize pass runs machine-setup.ps1 as the README shows.
+    param([string] $Password, [switch] $Media, [switch] $Audit, [switch] $Sysprep)
     $user = [Security.SecurityElement]::Escape($UserName)
     $secret = [Security.SecurityElement]::Escape($Password)
     $component = 'processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"'
-    # The media brings the kit itself; only the answer-ISO test needs the specialize copy step.
-    $specialize = if ($Media) { '' } else { @"
+    # The sysprep test runs exactly the specialize command the README documents.
+    $specializeCommand = if ($Sysprep) {
+        [regex]::Match([IO.File]::ReadAllText((Join-Path $KitSource 'README.md')), '<Path>([^<]*machine-setup\.ps1[^<]*)</Path>').Groups[1].Value
+    }
+        elseif (-not $Media) { 'cmd.exe /c for %d in (D E F G H I J K L M) do @if exist %d:\devsetup-specialize.cmd call %d:\devsetup-specialize.cmd %d:' }
+    $specialize = if ($specializeCommand) { @"
     <component name="Microsoft-Windows-Deployment" $component>
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Path>cmd.exe /c for %d in (D E F G H I J K L M) do @if exist %d:\devsetup-specialize.cmd call %d:\devsetup-specialize.cmd %d:</Path>
+          <Path>$specializeCommand</Path>
         </RunSynchronousCommand>
       </RunSynchronous>
     </component>
-"@ }
+"@ } else { '' }
     # Test-only administrator for PowerShell Direct, so polling never signs in as the user under test.
     $probe = if ($Media) { @"
           <LocalAccount wcm:action="add">
@@ -93,9 +110,35 @@ function Get-E2EAnswerFile {
             <Password><Value>$secret</Value><PlainText>true</PlainText></Password>
           </LocalAccount>
 "@ } else { '' }
-    return @"
-<?xml version="1.0" encoding="utf-8"?>
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
+    $oobe = if ($Audit) { @"
+    <component name="Microsoft-Windows-Deployment" $component>
+      <Reseal><Mode>Audit</Mode></Reseal>
+    </component>
+"@ } else { @"
+    <component name="Microsoft-Windows-Shell-Setup" $component>
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Name>$user</Name><Group>Administrators</Group>
+            <Password><Value>$secret</Value><PlainText>true</PlainText></Password>
+          </LocalAccount>
+$probe        </LocalAccounts>
+      </UserAccounts>
+      <AutoLogon>
+        <Enabled>true</Enabled><Username>$user</Username><LogonCount>1</LogonCount>
+        <Password><Value>$secret</Value><PlainText>true</PlainText></Password>
+      </AutoLogon>
+    </component>
+"@ }
+    $windowsPE = if ($Sysprep) { '' } else { @"
   <settings pass="windowsPE">
     <component name="Microsoft-Windows-International-Core-WinPE" $component>
       <SetupUILanguage><UILanguage>en-US</UILanguage></SetupUILanguage>
@@ -129,7 +172,11 @@ function Get-E2EAnswerFile {
       </UserData>
     </component>
   </settings>
-  <settings pass="specialize">
+"@ }
+    return @"
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+$windowsPE  <settings pass="specialize">
 $specialize    <component name="Microsoft-Windows-Shell-Setup" $component>
       <ComputerName>DEVSETUP-E2E</ComputerName>
       <TimeZone>Pacific Standard Time</TimeZone>
@@ -139,29 +186,7 @@ $specialize    <component name="Microsoft-Windows-Shell-Setup" $component>
     <component name="Microsoft-Windows-International-Core" $component>
       <InputLocale>en-US</InputLocale><SystemLocale>en-US</SystemLocale><UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
     </component>
-    <component name="Microsoft-Windows-Shell-Setup" $component>
-      <OOBE>
-        <HideEULAPage>true</HideEULAPage>
-        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
-        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
-        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
-        <HideLocalAccountScreen>true</HideLocalAccountScreen>
-        <ProtectYourPC>3</ProtectYourPC>
-      </OOBE>
-      <UserAccounts>
-        <LocalAccounts>
-          <LocalAccount wcm:action="add">
-            <Name>$user</Name><Group>Administrators</Group>
-            <Password><Value>$secret</Value><PlainText>true</PlainText></Password>
-          </LocalAccount>
-$probe        </LocalAccounts>
-      </UserAccounts>
-      <AutoLogon>
-        <Enabled>true</Enabled><Username>$user</Username><LogonCount>1</LogonCount>
-        <Password><Value>$secret</Value><PlainText>true</PlainText></Password>
-      </AutoLogon>
-    </component>
-  </settings>
+$oobe  </settings>
 </unattend>
 "@
 }
@@ -175,6 +200,17 @@ mkdir C:\Windows\Setup\Scripts 2>nul
 copy /y "C:\setup\devsetup\SetupComplete.cmd" "C:\Windows\Setup\Scripts\SetupComplete.cmd" >> "%LOG%"
 dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart >> "%LOG%"
 dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart >> "%LOG%"
+exit /b 0
+'@
+
+# Audit mode: only the kit is copied; the README's audit-mode steps do the rest. The probe account
+# (an administrator) lets the harness drive audit mode over PowerShell Direct.
+$Script:AuditSpecializeScript = @'
+@echo off
+set LOG=C:\Windows\Temp\devsetup-specialize.txt
+robocopy "%~1\devsetup" "C:\setup\devsetup" /E /A-:R /R:1 /W:1 /NP /NFL /NDL > "%LOG%"
+rem net user stops at a confirmation prompt for passwords longer than 14 characters and ignores piped input.
+powershell.exe -NoProfile -Command "New-LocalUser -Name '{0}' -Password (ConvertTo-SecureString '{1}' -AsPlainText -Force) -PasswordNeverExpires | Out-Null; Add-LocalGroupMember -Group Administrators -Member '{0}'" >> "%LOG%" 2>&1
 exit /b 0
 '@
 
@@ -324,8 +360,8 @@ $Script:VerifyScript = {
     $report.OhMyPoshProfile = (Test-Path $profilePath) -and ((Get-Content $profilePath -Raw) -match 'oh-my-posh init pwsh')
     $env:WSL_UTF8 = '1'
     $report.WslDistros = @(& wsl.exe --list --quiet 2>&1 | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
-    $report.CopilotPlugins = (& copilot plugin list --json 2>&1 | Out-String)
-    $report.WingetVersion = (& winget --version 2>&1 | Out-String).Trim()
+    $report.CopilotPlugins = if (Get-Command copilot -ErrorAction SilentlyContinue) { (& copilot plugin list --json 2>&1 | Out-String) }
+    $report.WingetVersion = if (Get-Command winget -ErrorAction SilentlyContinue) { (& winget --version 2>&1 | Out-String).Trim() }
     $report.Network = @(Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name) $($_.Status)" })
     [pscustomobject]$report
 }
@@ -354,6 +390,128 @@ function Get-E2EMediaStatus {
     }
 }
 
+function Invoke-E2EProbe {
+    param([Parameter(Mandatory)] [scriptblock] $ScriptBlock, [object[]] $ArgumentList = @())
+    Invoke-Command -VMName $VMName -Credential $probeCredential -ErrorAction Stop -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+}
+
+# Waits until audit mode has signed the built-in Administrator in, and returns the boot time.
+function Wait-E2EAuditDesktop {
+    param([datetime] $After = [datetime]::MinValue, [int] $Minutes = 60)
+    $deadline = (Get-Date).AddMinutes($Minutes)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 20
+        try {
+            $state = Invoke-E2EProbe -ScriptBlock {
+                [pscustomobject]@{
+                    # Windows 11 26H1 in audit mode sets this image state but not AuditInProgress.
+                    Audit    = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State').ImageState -eq 'IMAGE_STATE_SPECIALIZE_RESEAL_TO_AUDIT'
+                    User     = [string](Get-CimInstance Win32_ComputerSystem).UserName
+                    Explorer = [bool](Get-Process explorer -ErrorAction SilentlyContinue)
+                    Boot     = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+                }
+            }
+            if ($state.Audit -and $state.User -like '*\Administrator' -and $state.Explorer -and $state.Boot -gt $After) {
+                return $state.Boot
+            }
+        } catch {
+            Write-Verbose "Probe not ready: $($_.Exception.Message)"
+        }
+    }
+    throw "Audit mode did not reach the Administrator desktop within $Minutes minutes."
+}
+
+# Runs a command in the guest as the probe administrator, elevated, as the README's technician
+# would. Task Scheduler queues tasks while audit mode is in progress, so it runs over PowerShell Direct.
+function Invoke-E2EAuditCommand {
+    param([Parameter(Mandatory)] [string] $Name, [Parameter(Mandatory)] [string] $Command)
+    $exit = Invoke-E2EProbe -ArgumentList $Name, $Command -ScriptBlock {
+        param($Name, $Command)
+        Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+        $global:LASTEXITCODE = 0
+        & ([scriptblock]::Create($Command)) *>&1 | Out-File -LiteralPath "C:\Windows\Temp\devsetup-e2e-$Name.txt" -Encoding utf8
+        $LASTEXITCODE
+    }
+    $session = New-PSSession -VMName $VMName -Credential $probeCredential
+    try {
+        Copy-Item -FromSession $session -Path "C:\Windows\Temp\devsetup-e2e-$Name.txt" -Destination $ResultsPath -ErrorAction SilentlyContinue
+    } finally {
+        Remove-PSSession $session
+    }
+    return $exit
+}
+
+function Invoke-E2EAuditMode {
+    Write-E2E 'Waiting for audit mode (built-in Administrator desktop)'
+    $boot = Wait-E2EAuditDesktop
+    Save-E2EScreenshot -Name '10-audit-desktop'
+    # On 26H1, PowerShell Direct stops authenticating a few minutes into the first audit-mode boot
+    # (no failed logon is recorded); after one restart it stays reliable.
+    Write-E2E 'Audit mode: restarting once so PowerShell Direct stays reliable'
+    Invoke-E2EProbe -ScriptBlock { shutdown.exe /r /t 5 /f } | Out-Null
+    $boot = Wait-E2EAuditDesktop -After $boot -Minutes 20
+    $skip = $AuditSkip -join ','
+    $setup = "& 'C:\setup\devsetup\machine-setup.ps1' -PerUserApps -Skip $skip"
+
+    Write-E2E "Audit mode: machine-setup.ps1 -PerUserApps -Skip $skip (first run)"
+    $exit = Invoke-E2EAuditCommand -Name 'audit-run1' -Command $setup
+    Write-E2E "  exit code $exit" 'DarkGray'
+    Save-E2EScreenshot -Name '11-audit-run1'
+
+    Write-E2E 'Audit mode: restarting so the WSL features finish turning on'
+    Invoke-E2EProbe -ScriptBlock { shutdown.exe /r /t 5 /f } | Out-Null
+    $boot = Wait-E2EAuditDesktop -After $boot -Minutes 20
+
+    Write-E2E "Audit mode: machine-setup.ps1 -PerUserApps -Skip $skip (second run; expect already OK)"
+    $exit = Invoke-E2EAuditCommand -Name 'audit-run2' -Command $setup
+    Write-E2E "  exit code $exit" 'DarkGray'
+    Save-E2EScreenshot -Name '12-audit-run2'
+    $Script:AuditState = Invoke-E2EProbe -ScriptBlock {
+        $result = Get-Content 'C:\ProgramData\CalmOS-Offline\machine-setup-result.json' -Raw | ConvertFrom-Json
+        [pscustomobject]@{
+            Completed     = $result.Completed
+            Flagged       = @($result.Flagged)
+            PythonPresent = Test-Path 'C:\Program Files\Python314\python.exe'
+        }
+    }
+    Write-E2E "  completed=$($Script:AuditState.Completed) flagged=[$(@($Script:AuditState.Flagged) -join ', ')] python-before-sysprep=$($Script:AuditState.PythonPresent)" 'DarkGray'
+
+    Write-E2E 'Generalizing with sysprep; its answer file runs machine-setup.ps1 in the specialize pass'
+    $sysprepXml = Get-E2EAnswerFile -Password $password -Sysprep
+    Invoke-E2EProbe -ArgumentList $sysprepXml -ScriptBlock {
+        param($Xml)
+        [IO.File]::WriteAllText('C:\Windows\Temp\devsetup-e2e-sysprep.xml', $Xml, [Text.UTF8Encoding]::new($false))
+        # Audit mode opens the System Preparation Tool window at sign-in; a second sysprep refuses to start.
+        Get-Process sysprep -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force }
+    }
+    # sysprep.exe is a GUI program: Start-Process -Wait keeps the session open until it shuts the VM down.
+    $sysprepJob = Invoke-Command -VMName $VMName -Credential $probeCredential -AsJob -ScriptBlock {
+        (Start-Process -FilePath "$env:SystemRoot\System32\Sysprep\sysprep.exe" -Wait -PassThru -ArgumentList @(
+            '/generalize', '/oobe', '/shutdown', '/quiet', '/unattend:C:\Windows\Temp\devsetup-e2e-sysprep.xml')).ExitCode
+    }
+    $deadline = (Get-Date).AddMinutes(30)
+    while ((Get-VM -Name $VMName).State -ne 'Off') {
+        if ((Get-Date) -gt $deadline -or ($sysprepJob.State -eq 'Completed' -and (Get-VM -Name $VMName).State -ne 'Off')) {
+            Start-Sleep -Seconds 30
+            if ((Get-VM -Name $VMName).State -eq 'Off') { break }
+            Save-E2EScreenshot -Name '13-sysprep-stuck'
+            $session = New-PSSession -VMName $VMName -Credential $probeCredential
+            try {
+                Copy-Item -FromSession $session -Path 'C:\Windows\System32\Sysprep\Panther\setuperr.log', 'C:\Windows\System32\Sysprep\Panther\setupact.log' -Destination $ResultsPath -ErrorAction SilentlyContinue
+            } finally {
+                Remove-PSSession $session
+            }
+            throw "sysprep did not shut the VM down (exit code $(Receive-Job $sysprepJob -ErrorAction SilentlyContinue)); see setuperr.log in the results."
+        }
+        Start-Sleep -Seconds 15
+    }
+    Remove-Job $sysprepJob -Force -ErrorAction SilentlyContinue
+    Write-E2E 'Sysprep finished; starting the generalized image (specialize, OOBE, first sign-in)'
+    # A shipped device has no answer disc; only the sysprep answer file drives the next boot.
+    Get-VMDvdDrive -VMName $VMName | Where-Object { $_.Path -eq $answerIso } | Remove-VMDvdDrive
+    Start-VM -Name $VMName
+}
+
 Write-E2E "Refreshing kit scripts in $KitPath from $KitSource"
 foreach ($file in @('_oem.ps1', 'machine-setup.ps1', 'user-setup.ps1', 'SetupComplete.cmd', 'README.md')) {
     $source = Join-Path $KitSource $file
@@ -378,13 +536,14 @@ if ($UseMedia) {
     $staging = Join-Path $vmDirectory 'answer'
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
     New-Item -ItemType Directory -Path $staging | Out-Null
-    [IO.File]::WriteAllText((Join-Path $staging 'autounattend.xml'), (Get-E2EAnswerFile -Password $password), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $staging 'autounattend.xml'), (Get-E2EAnswerFile -Password $password -Audit:$AuditMode), [Text.UTF8Encoding]::new($false))
     $specialize = $Script:SpecializeScript + "`r`n"
     $specialize = $specialize.Replace('exit /b 0', @"
 copy /y "%~1\devsetup-e2e-status.ps1" C:\Windows\Temp\devsetup-e2e-status.ps1 >> "%LOG%"
 schtasks.exe /create /f /tn DevSetupE2EStatus /ru SYSTEM /sc onstart /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Windows\Temp\devsetup-e2e-status.ps1" >> "%LOG%"
 exit /b 0
 "@)
+    if ($AuditMode) { $specialize = $Script:AuditSpecializeScript.Replace('{0}', $Script:ProbeUser).Replace('{1}', $password) + "`r`n" }
     [IO.File]::WriteAllText((Join-Path $staging 'devsetup-specialize.cmd'), $specialize, [Text.Encoding]::ASCII)
     [IO.File]::WriteAllText((Join-Path $staging 'devsetup-e2e-status.ps1'), $Script:StatusScript, [Text.UTF8Encoding]::new($false))
     $answerIso = Join-Path $vmDirectory 'answer.iso'
@@ -417,6 +576,8 @@ Write-E2E 'Booting Windows Setup from the ISO'
 Send-E2EKeys -Seconds 12
 Start-Sleep -Seconds 20
 Save-E2EScreenshot -Name '00-setup'
+$Script:AuditState = $null
+if ($AuditMode) { Invoke-E2EAuditMode }
 
 $deadline = $started.AddMinutes($TimeoutMinutes)
 $lastStatus = ''
@@ -433,7 +594,7 @@ while ((Get-Date) -lt $deadline) {
         $shot++
         $lastShot = Get-Date
     }
-    $status = if ($UseMedia) { Get-E2EMediaStatus } else { Get-E2EGuestStatus }
+    $status = if ($UseMedia -or $AuditMode) { Get-E2EMediaStatus } else { Get-E2EGuestStatus }
     $summary = 'machine={0} user={1} logged-on={2}' -f $status['DevSetupMachine'], $status['DevSetupUser'], $status['DevSetupUserName']
     if ($summary -ne $lastStatus) {
         Write-E2E "  [$([int]((Get-Date) - $started).TotalMinutes) min] $summary" 'DarkGray'
@@ -468,6 +629,9 @@ try {
         "C:\Users\$UserName\AppData\Local\CalmOS\offline-user-setup-log.txt",
         "C:\Users\$UserName\AppData\Local\CalmOS\offline-user-setup-result.json"
     )
+    if ($AuditMode) {
+        $files += @('C:\Windows\Temp\devsetup-e2e-sysprep.xml', 'C:\Windows\System32\Sysprep\Panther\setuperr.log')
+    }
     foreach ($file in $files) {
         try {
             Copy-Item -FromSession $session -Path $file -Destination $ResultsPath -ErrorAction Stop
@@ -493,6 +657,23 @@ if (-not $report) {
 }
 
 $passed = $done -and $pathOk
+if ($AuditMode -and $report) {
+    # The skipped packages must be absent after audit mode and present for the user after OOBE.
+    $machine = $report.MachineResult
+    $machineOk = $machine -and $machine.Completed -and @($machine.Flagged).Count -eq 0
+    $user = $report.UserResult
+    $userOk = $user -and $user.Completed -and @($user.Flagged).Count -eq 0
+    Write-E2E ("Audit mode check: user part completed={0} flagged=[{1}]" -f $(if ($user) { $user.Completed } else { 'missing' }),
+        $(if ($user) { @($user.Flagged) -join ', ' } else { '' })) $(if ($userOk) { 'Green' } else { 'Red' })
+    $passed = $passed -and $userOk
+    $pythonOk = $Script:AuditState -and -not $Script:AuditState.PythonPresent -and $report.Commands.python
+    if ($AuditSkip -notcontains 'Python') { $pythonOk = $true }
+    $color = if ($machineOk -and $pythonOk) { 'Green' } else { 'Red' }
+    Write-E2E ("Audit mode check: machine part after specialize completed={0} flagged=[{1}]; Python before sysprep={2}, after OOBE={3}" -f
+        $(if ($machine) { $machine.Completed } else { 'missing' }), $(if ($machine) { @($machine.Flagged) -join ', ' } else { '' }),
+        $(if ($Script:AuditState) { $Script:AuditState.PythonPresent } else { 'unknown' }), $report.Commands.python) $color
+    $passed = $passed -and $machineOk -and $pythonOk
+}
 Write-E2E "Finished in $elapsed minutes. Results: $ResultsPath" $(if ($passed) { 'Green' } else { 'Yellow' })
 Write-E2E "VM $VMName is kept for inspection (password in credentials.txt). Remove it with: Remove-VM $VMName -Force" 'DarkGray'
 if (-not $passed) { exit 1 }

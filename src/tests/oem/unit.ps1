@@ -110,6 +110,16 @@ $command = Get-DevSetupUserCommand -ScriptPath 'C:\ProgramData\CalmOS-Offline\us
 Assert-Kit ($command -match '-WindowStyle Hidden' -and $command -match '-NonInteractive') 'The Active Setup command must start PowerShell hidden and non-interactive.'
 #endregion
 
+#region The sysprep specialize command in the README runs the whole machine part, hidden
+$readmeText = [IO.File]::ReadAllText((Join-Path $kit 'README.md'))
+$specializePath = [regex]::Match($readmeText, '<Path>([^<]*machine-setup\.ps1[^<]*)</Path>').Groups[1].Value
+# Provisioned Store bundles do not survive OOBE, so the audit-mode MSIX apps must be staged (-PerUserApps);
+# -Skip would leave packages uninstalled.
+Assert-Kit ($specializePath -match '-PerUserApps' -and $specializePath -notmatch '-Skip') 'The README specialize command must run the whole machine part with -PerUserApps and without -Skip.'
+Assert-Kit ($readmeText -match 'machine-setup\.ps1 -PerUserApps\r?\n') 'The README audit-mode command must pass -PerUserApps.'
+Assert-Kit ($specializePath -match '^powershell\.exe ' -and $specializePath -match '-WindowStyle Hidden' -and $specializePath -match '-NonInteractive') 'The README specialize command must start PowerShell directly, hidden and non-interactive, so no console window shows.'
+#endregion
+
 #region Every standard step is covered by the kit
 # Capture the official Partial step names by running each phase with recording stand-ins.
 $Script:capturedSteps = @()
@@ -153,7 +163,8 @@ foreach ($phase in $definition.Phases) {
     $whole = @($kitLines | Where-Object { $_ -match "\{\s*$([regex]::Escape($phase.Function))\s*\}" -and $_ -notmatch '-Steps' })
     if ($whole.Count) { $covered += Get-PhaseSteps -Phase $phase }
 }
-Assert-Kit ($machineText -match 'foreach \(\$entry in @\(\$manifest\.Packages\)\)') 'The machine part must install every downloaded package.'
+Assert-Kit ($machineText -match '\$included = @\(\$manifest\.Packages \| Where-Object \{ \$_\.Name -notin \$skippedNames \}\)' -and
+    $machineText -match 'foreach \(\$entry in \$included\)') 'The machine part must install every downloaded package that -Skip does not leave out.'
 $covered += @($definition.Phases | Where-Object { $_.File -eq 'packages.ps1' } | ForEach-Object { $_.Parameters.Packages })
 if ($kitText -match 'Get-DevConfigPackage -Name' -and $kitText -match "if \(\`$package\['Settings'\]\)") {
     $covered += @(Get-PhaseSteps -Phase @($definition.Phases | Where-Object { $_.File -eq 'packages.ps1' })[0])

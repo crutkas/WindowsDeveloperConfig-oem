@@ -19,9 +19,13 @@
 param(
     # Defaults to this script's folder (set below: Windows PowerShell leaves $PSScriptRoot empty in param defaults).
     [string] $KitRoot,
-    # SetupComplete.cmd passes this. Windows removes MSIX provisioning made during OOBE when it deletes
-    # its temporary OOBE account, so MSIX apps are staged and installed for each user at first sign-in.
+    # Every option passes this (SetupComplete.cmd, audit mode, the specialize pass). Windows drops
+    # provisioned Store app bundles when OOBE deletes its temporary account, so MSIX apps are staged
+    # and installed for each user at first sign-in.
     [switch] $PerUserApps,
+    # Package names or WinGet IDs to leave out of this run, for example -Skip Python. A later run
+    # without -Skip installs them, such as the specialize pass after an audit-mode run (README).
+    [string[]] $Skip,
     # Development only: skips the Microsoft signature check on the payload.
     [switch] $AllowUnsigned
 )
@@ -50,6 +54,16 @@ if (-not $identity.IsSystem -and
 $KitRoot = (Resolve-Path -LiteralPath $KitRoot).Path.TrimEnd('\')
 $manifest = Read-DevSetupManifest -Root $KitRoot
 $payload = Join-Path $KitRoot 'payload'
+
+# powershell.exe -File passes "-Skip A,B" as one string.
+$Skip = @($Skip | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$skipped = @($manifest.Packages | Where-Object { $_.Name -in $Skip -or $_.Id -in $Skip })
+$skippedNames = @($skipped | ForEach-Object { $_.Name })
+$unknown = @($Skip | Where-Object { $_ -notin @($manifest.Packages.Name) -and $_ -notin @($manifest.Packages.Id) })
+if ($unknown.Count -gt 0) {
+    Write-Host "-Skip: $($unknown -join ', ') is not a package in the kit. Use one of: $(@($manifest.Packages.Name) -join ', ')." -ForegroundColor Red
+    exit 1
+}
 
 # The kit runs as SYSTEM and seeds every user's sign-in, so lock it down before trusting its contents.
 # Its parent (C:\setup) is locked too: under C:\ any user could otherwise rename it and swap the kit.
@@ -288,6 +302,18 @@ function Get-DevSetupEntryDescription {
     return $Default
 }
 
+# Sysprep /generalize fails (0x80073cf2) on any app registered for a user but not provisioned. The
+# PowerToys installer registers Command Palette for the account that runs it; PowerToys registers
+# it again for each user when it starts, so in audit mode those registrations are removed.
+$inAuditMode = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State' -ErrorAction SilentlyContinue).ImageState -eq 'IMAGE_STATE_SPECIALIZE_RESEAL_TO_AUDIT'
+function Get-DevSetupSysprepBlockers {
+    $provisioned = @(Get-AppxProvisionedPackage -Online | ForEach-Object { $_.DisplayName })
+    @(Get-AppxPackage -AllUsers | Where-Object {
+        ($_.Name -eq 'Microsoft.CommandPalette' -or $_.Name -like 'Microsoft.PowerToys.*') -and
+            $provisioned -notcontains $_.Name -and @($_.PackageUserInformation | Where-Object { $_.InstallState -eq 'Installed' }).Count -gt 0
+    })
+}
+
 $total = 7
 $failure = $null
 Write-Host ''
@@ -296,9 +322,13 @@ Write-Host "  Kit $($manifest.KitVersion), payload $($manifest.PayloadRef), crea
 if ($PerUserApps) {
     Write-Host '  MSIX apps (Terminal, PowerShell 7, WinGet, ...) install for each user at first sign-in.' -ForegroundColor DarkGray
 }
+if ($skippedNames.Count -gt 0) {
+    Write-Host "  Skipping $($skippedNames -join ', ') in this run (-Skip). Run machine-setup.ps1 again without -Skip to install them." -ForegroundColor DarkGray
+}
 try {
     $packages = @{}
     foreach ($entry in @($manifest.Packages)) { $packages[$entry.Name] = $entry }
+    $included = @($manifest.Packages | Where-Object { $_.Name -notin $skippedNames })
 
     Invoke-DevSetupPhase -Index 1 -Total $total -Title 'Getting ready' -ScriptBlock {
         Invoke-DevConfigSteps -Steps @(
@@ -307,22 +337,32 @@ try {
                 -Check { param($Entry) Test-DevSetupEntry -Entry $Entry } `
                 -Apply { param($Entry) Install-DevSetupEntry -Entry $Entry } `
                 -ArgumentList @($manifest.WinGet)
-            New-DevConfigStep -Name 'PowerShell7' -BestEffort `
-                -Description (Get-DevSetupEntryDescription -Entry $packages['PowerShell'] -Default 'Provision PowerShell 7 for all users') `
-                -Check { param($Entry) Test-DevSetupEntry -Entry $Entry } `
-                -Apply { param($Entry) Install-DevSetupEntry -Entry $Entry } `
-                -ArgumentList @($packages['PowerShell'])
+            if ('PowerShell' -notin $skippedNames) {
+                New-DevConfigStep -Name 'PowerShell7' -BestEffort `
+                    -Description (Get-DevSetupEntryDescription -Entry $packages['PowerShell'] -Default 'Provision PowerShell 7 for all users') `
+                    -Check { param($Entry) Test-DevSetupEntry -Entry $Entry } `
+                    -Apply { param($Entry) Install-DevSetupEntry -Entry $Entry } `
+                    -ArgumentList @($packages['PowerShell'])
+            }
         )
     }
 
     Invoke-DevSetupPhase -Index 2 -Total $total -Title 'Packages' -ScriptBlock {
-        Invoke-DevConfigSteps -Steps @(foreach ($entry in @($manifest.Packages)) {
-            New-DevConfigStep -Name $entry.Name -BestEffort `
-                -Description (Get-DevSetupEntryDescription -Entry $entry -Default "Install $($entry.Id) $($entry.Version) from the kit") `
-                -Check { param($Entry) Test-DevSetupEntry -Entry $Entry } `
-                -Apply { param($Entry) Install-DevSetupEntry -Entry $Entry } `
-                -ArgumentList @($entry)
-        })
+        Invoke-DevConfigSteps -Steps @(
+            foreach ($entry in $included) {
+                New-DevConfigStep -Name $entry.Name -BestEffort `
+                    -Description (Get-DevSetupEntryDescription -Entry $entry -Default "Install $($entry.Id) $($entry.Version) from the kit") `
+                    -Check { param($Entry) Test-DevSetupEntry -Entry $Entry } `
+                    -Apply { param($Entry) Install-DevSetupEntry -Entry $Entry } `
+                    -ArgumentList @($entry)
+            }
+            if ($inAuditMode) {
+                New-DevConfigStep -Name 'SysprepReady' -BestEffort `
+                    -Description 'Remove PowerToys app registrations that would stop sysprep (PowerToys adds them again for each user)' `
+                    -Check { @(Get-DevSetupSysprepBlockers).Count -eq 0 } `
+                    -Apply { Get-DevSetupSysprepBlockers | ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName -AllUsers } }
+            }
+        )
     }
 
     Invoke-DevSetupPhase -Index 3 -Total $total -Title 'System settings' -ScriptBlock { Invoke-RegistrySystemPhase }
@@ -386,6 +426,7 @@ try {
 $retryArguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-WindowStyle', 'Hidden',
     '-File', "`"$PSCommandPath`"", '-KitRoot', "`"$KitRoot`"")
 if ($PerUserApps) { $retryArguments += '-PerUserApps' }
+if ($skippedNames.Count -gt 0) { $retryArguments += @('-Skip', ($skippedNames -join ',')) }
 if ($AllowUnsigned) { $retryArguments += '-AllowUnsigned' }
 try {
     $retry = Update-DevSetupMachineRetry -Needed:([bool]$failure -or $Script:DevConfigTally.Warned -gt 0) -Arguments ($retryArguments -join ' ')

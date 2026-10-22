@@ -37,13 +37,14 @@ that user's first sign-in.
 ### Machine-wide: `machine-setup.ps1`
 
 Runs once per PC, before OOBE: as SYSTEM from `SetupComplete.cmd` (Options A and C) or as an
-administrator in audit mode (Option B). It never restarts Windows.
+administrator in audit mode (Option B). In Option B, packages skipped in audit mode install as
+SYSTEM from the sysprep answer file's specialize pass. It never restarts Windows.
 
 | Area | What it does |
 |---|---|
 | Kit and setup files | Restricts `C:\setup` and the kit to administrators and SYSTEM. Installs the signed Windows Dev Config scripts to `C:\ProgramData\CalmOS`, where the online setup keeps them, and copies the files each user needs to `C:\ProgramData\CalmOS-Offline`. |
 | Apps for all users | Installs from the kit with each installer's silent switches: Git, GitHub CLI, Azure CLI, GitHub Copilot CLI, VS Code, .NET 10 SDK, Python 3.14, VC++ Redistributable, uv, Node.js LTS, NVM for Windows, Coreutils, and PowerToys. |
-| MSIX apps | Windows Terminal, Intelligent Terminal, PowerShell 7, App Installer (WinGet), Oh My Posh, and winapp CLI. Option B provisions them for all users. Options A and C stage them in `C:\ProgramData\CalmOS-Offline` for each user's first sign-in, because Windows drops MSIX provisioning made during OOBE. |
+| MSIX apps | Windows Terminal, Intelligent Terminal, PowerShell 7, App Installer (WinGet), Oh My Posh, and winapp CLI. In every option they are staged in `C:\ProgramData\CalmOS-Offline` (`-PerUserApps`) and installed at each user's first sign-in, because Windows drops provisioned Store app bundles when OOBE deletes its temporary setup account. |
 | System settings | Win32 long paths. |
 | Fonts | Cascadia Code NF and Cascadia Mono NF, for all users. |
 | WSL | Turns on Virtual Machine Platform and Windows Subsystem for Linux, and installs the WSL MSI. |
@@ -59,7 +60,7 @@ when the desktop appears.
 
 | Area | What it does |
 |---|---|
-| MSIX apps | Installs them for this user from the staged copy (Options A and C) or registers the provisioned ones (Option B), and makes sure their commands (`wt`, `pwsh`, `winget`, `oh-my-posh`, `winapp`) work. |
+| MSIX apps | Installs them for this user from the staged copy, and makes sure their commands (`wt`, `pwsh`, `winget`, `oh-my-posh`, `winapp`) work. |
 | PowerToys | Registers its identity package with its app folder, so PowerToys Settings, Image Resizer, Advanced Paste, and the Command Palette extension start. |
 | Coreutils | Adds Coreutils' command hook (`ls` and the other Coreutils commands) to the PowerShell 7 profile, using Coreutils' own script. |
 | Windows Terminal | Sets PowerShell 7 as the default profile and Cascadia Mono NF as the font, and adds the GitHub Copilot profile. |
@@ -172,6 +173,8 @@ Choose one option for the machine part.
 > except on Enterprise editions
 > ([Add a Custom Script to Windows Setup](https://learn.microsoft.com/windows-hardware/manufacture/desktop/add-a-custom-script-to-windows-setup)).
 > For devices that ship with an OEM key, use **Option B**. Options A and C both depend on `SetupComplete.cmd`.
+> Option B can still leave packages to install after sysprep, from the answer file's specialize
+> pass; see [Install some packages after sysprep](#install-some-packages-after-sysprep-instead-of-in-audit-mode).
 
 ### Option A: offline servicing with SetupComplete.cmd
 
@@ -217,15 +220,63 @@ not slower and the OEM product key does not matter.
 3. From an elevated PowerShell:
 
    ```powershell
-   powershell -NoProfile -ExecutionPolicy RemoteSigned -File C:\setup\devsetup\machine-setup.ps1
+   powershell -NoProfile -ExecutionPolicy RemoteSigned -File C:\setup\devsetup\machine-setup.ps1 -PerUserApps
    ```
 
+   `-PerUserApps` stages the MSIX apps for each user's first sign-in, as in Options A and C:
+   Windows drops provisioned Store app bundles when OOBE deletes its temporary setup account,
+   also after sysprep.
 4. Restart (still in audit mode) so the WSL features finish turning on, then run the same command
-   again. Every step should report `already OK`.
+   again. Every step should report `already OK`. Run it last, right before sysprep: it also removes
+   the Command Palette registration that the PowerToys installer leaves for the account that ran it,
+   which would otherwise stop sysprep with error 0x80073cf2. PowerToys registers Command Palette
+   again for each user.
 5. Generalize and capture as usual, for example `sysprep /generalize /oobe /shutdown`.
 
 The audit-mode Administrator is skipped by `user-setup.ps1`; the per-user part runs for the
 customer's account after OOBE. You do not need `SetupComplete.cmd` with this option.
+
+#### Install some packages after sysprep instead of in audit mode
+
+If a package must not be installed in audit mode (for example Python), leave it out of the
+audit-mode runs and install it from the specialize pass of the answer file you give sysprep.
+The specialize pass runs as SYSTEM after the image is applied to the device and before OOBE, and
+unlike `SetupComplete.cmd` it also runs on devices with an OEM product key.
+
+1. In steps 3 and 4, add `-Skip` with the package names from `devsetup.json` (or WinGet IDs),
+   separated by commas:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy RemoteSigned -File C:\setup\devsetup\machine-setup.ps1 -PerUserApps -Skip Python
+   ```
+
+2. Add this command to the specialize pass of your sysprep answer file. If the file already
+   has `RunSynchronousCommand` entries, give this one the next `Order` number. On Arm64 images,
+   use `processorArchitecture="arm64"`.
+
+   ```xml
+   <settings pass="specialize">
+     <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35"
+         language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+       <RunSynchronous>
+         <RunSynchronousCommand wcm:action="add">
+           <Order>1</Order>
+           <Path>powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File C:\setup\devsetup\machine-setup.ps1 -PerUserApps</Path>
+           <Description>Windows Dev Config: install the packages skipped in audit mode</Description>
+         </RunSynchronousCommand>
+       </RunSynchronous>
+     </component>
+   </settings>
+   ```
+
+3. Generalize with that answer file, for example
+   `sysprep /generalize /oobe /shutdown /unattend:C:\setup\unattend.xml`.
+
+The specialize pass runs `machine-setup.ps1` again, as SYSTEM and hidden, while Windows shows
+its own setup screen. Every step done in audit mode reports `already OK`, so only the skipped
+packages are installed. The run adds to `C:\ProgramData\CalmOS-Offline\machine-setup-log.txt`
+and writes `machine-setup-result.json` as usual; Windows records the command's exit code in
+`C:\Windows\Panther\UnattendGC\setupact.log`.
 
 ### Option C: installation media (USB drive)
 
@@ -283,9 +334,8 @@ does. In order:
 2. **OOBE:** the customer goes through OOBE as normal and creates their account from the
    prepared Default user profile.
 3. **First sign-in:** the per-user part runs hidden while Windows keeps its own "This might take
-   a few minutes" screen up, so the user sees nothing from the kit. It took about 70 seconds in
-   testing when the MSIX apps were provisioned for all users, and about 2 minutes when they
-   installed per user. If a step cannot finish yet (for example, because WSL needs a restart), the
+   a few minutes" screen up, so the user sees nothing from the kit. It took about 2 minutes in
+   testing, most of it installing the MSIX apps for the user. If a step cannot finish yet (for example, because WSL needs a restart), the
    script runs again, hidden, at the next sign-in, up to three times.
 4. **Every later user** on the PC gets the same per-user setup, hidden, at their first sign-in.
 
@@ -361,6 +411,9 @@ not elevation:
 
 # Option C: build the installation media with build-media.ps1 and boot only that ISO
 .\src\tests\oem\hyperv-e2e.ps1 -IsoPath D:\iso\Win11_x64.iso -KitPath C:\setup\devsetup -UseMedia
+
+# Option B: audit mode with Python skipped, sysprep, and Python installed from the specialize pass
+.\src\tests\oem\hyperv-e2e.ps1 -IsoPath D:\iso\Win11_x64.iso -KitPath C:\setup\devsetup -AuditMode -AuditSkip Python
 ```
 
 It installs Windows unattended from the ISO, applies the Option A image changes during setup,
