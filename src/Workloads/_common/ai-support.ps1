@@ -1917,19 +1917,88 @@ function Assert-CommandAvailable {
     return $command
 }
 
+function Test-AiPathEntryMatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Entry,
+        [Parameter(Mandatory)] [string] $Path
+    )
+
+    $left = [Environment]::ExpandEnvironmentVariables($Entry.Trim()).TrimEnd('\')
+    $right = [Environment]::ExpandEnvironmentVariables($Path.Trim()).TrimEnd('\')
+    return [string]::Equals($left, $right, [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Get-AiUpdatedPathValue {
     [CmdletBinding()]
     param(
         [AllowEmptyString()] [string] $CurrentValue,
         [Parameter(Mandatory)] [string] $Path,
-        [switch] $Prepend
+        [switch] $Prepend,
+        [switch] $Remove
     )
 
-    $entries = @($CurrentValue -split ';' | Where-Object { $_ -and $_ -ne $Path })
-    if ($Prepend) {
-        return (@($Path) + $entries) -join ';'
+    $entries = @($CurrentValue -split ';' | Where-Object { $_ -and -not (Test-AiPathEntryMatch -Entry $_ -Path $Path) })
+    if ($Remove) {
+        return $entries -join ';'
     }
-    return (@($entries) + $Path) -join ';'
+    $existing = @($CurrentValue -split ';' | Where-Object { $_ -and (Test-AiPathEntryMatch -Entry $_ -Path $Path) })
+    $entry = if ($existing.Count -gt 0) { $existing[0] } else { $Path }
+    if ($Prepend) {
+        return (@($entry) + $entries) -join ';'
+    }
+    return (@($entries) + $entry) -join ';'
+}
+
+function Send-AiEnvironmentChange {
+    if (-not ('DevConfig.EnvironmentBroadcast' -as [type])) {
+        Add-Type -Namespace DevConfig -Name EnvironmentBroadcast -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);
+'@
+    }
+    $result = [UIntPtr]::Zero
+    # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG: the same notification SetEnvironmentVariable sends.
+    [void][DevConfig.EnvironmentBroadcast]::SendMessageTimeout(
+        [IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
+}
+
+# Reads and writes the raw registry value: [Environment]::Get/SetEnvironmentVariable
+# expand %VAR% references and rewrite REG_EXPAND_SZ as REG_SZ.
+function Update-AiUserPathValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [switch] $Prepend,
+        [switch] $Remove,
+        [string] $SubKey = 'Environment'
+    )
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($SubKey)
+    try {
+        $exists = @($key.GetValueNames()) -contains 'Path'
+        $current = if ($exists) {
+            [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        } else { '' }
+        $updated = Get-AiUpdatedPathValue -CurrentValue $current -Path $Path -Prepend:$Prepend -Remove:$Remove
+        if ($exists -and $updated -ceq (@($current -split ';' | Where-Object { $_ }) -join ';')) {
+            return
+        }
+        if (-not $updated) {
+            $key.DeleteValue('Path', $false)
+        } else {
+            $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+            if ($exists -and $key.GetValueKind('Path') -eq [Microsoft.Win32.RegistryValueKind]::String -and -not $updated.Contains('%')) {
+                $kind = [Microsoft.Win32.RegistryValueKind]::String
+            }
+            $key.SetValue('Path', $updated, $kind)
+        }
+    } finally {
+        $key.Dispose()
+    }
+    if ($SubKey -eq 'Environment') {
+        Send-AiEnvironmentChange
+    }
 }
 
 function Add-UserPathEntry {
@@ -1939,11 +2008,7 @@ function Add-UserPathEntry {
         [switch] $Prepend
     )
 
-    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
-    [Environment]::SetEnvironmentVariable(
-        'Path',
-        (Get-AiUpdatedPathValue -CurrentValue $current -Path $Path -Prepend:$Prepend),
-        'User')
+    Update-AiUserPathValue -Path $Path -Prepend:$Prepend
     $env:Path = Get-AiUpdatedPathValue -CurrentValue $env:Path -Path $Path -Prepend:$Prepend
 }
 
@@ -1981,11 +2046,8 @@ function Remove-UserPathEntry {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string] $Path)
 
-    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $entries = @($current -split ';' | Where-Object { $_ -and $_ -ne $Path })
-    [Environment]::SetEnvironmentVariable('Path', ($entries -join ';'), 'User')
-    $processEntries = @($env:Path -split ';' | Where-Object { $_ -and $_ -ne $Path })
-    $env:Path = $processEntries -join ';'
+    Update-AiUserPathValue -Path $Path -Remove
+    $env:Path = Get-AiUpdatedPathValue -CurrentValue $env:Path -Path $Path -Remove
 }
 
 function Remove-TemporaryFileWithRetry {

@@ -571,4 +571,47 @@ try {
     Remove-Item -LiteralPath $failurePath -Force -ErrorAction SilentlyContinue
 }
 
+& {
+    . (Join-Path $PSScriptRoot '..\..\Workloads\_common\ai-support.ps1')
+
+    $expandedProfile = [Environment]::ExpandEnvironmentVariables('%USERPROFILE%')
+    Assert-Equal (Get-AiUpdatedPathValue -CurrentValue '%USERPROFILE%\bin;C:\Keep' -Path "$expandedProfile\BIN\" -Remove) 'C:\Keep' 'PATH matching should compare expanded entries, case-insensitively, ignoring a trailing backslash'
+    Assert-Equal (Get-AiUpdatedPathValue -CurrentValue 'C:\Keep;%USERPROFILE%\bin' -Path "$expandedProfile\bin" -Prepend) '%USERPROFILE%\bin;C:\Keep' 'Re-adding a PATH entry should keep its existing %VAR% spelling'
+
+    $subKey = "Software\DevConfigPathTest-$([guid]::NewGuid().ToString('N'))"
+    $kind = [Microsoft.Win32.RegistryValueKind]
+    $noExpand = [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+    try {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($subKey)
+        $key.SetValue('Path', '%USERPROFILE%\.tools;C:\Keep', $kind::ExpandString)
+        $key.Dispose()
+        $read = {
+            $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($subKey)
+            try {
+                if (@($k.GetValueNames()) -notcontains 'Path') { return $null }
+                [pscustomobject]@{ Raw = $k.GetValue('Path', '', $noExpand); Kind = $k.GetValueKind('Path') }
+            } finally { $k.Dispose() }
+        }
+
+        Update-AiUserPathValue -SubKey $subKey -Path 'C:\New\llama' -Prepend
+        $value = & $read
+        Assert-Equal $value.Raw 'C:\New\llama;%USERPROFILE%\.tools;C:\Keep' 'Adding a user PATH entry should keep %VAR% references unexpanded'
+        Assert-Equal $value.Kind $kind::ExpandString 'Adding a user PATH entry should keep REG_EXPAND_SZ'
+
+        Update-AiUserPathValue -SubKey $subKey -Path 'c:\new\llama\' -Prepend
+        Assert-Equal (& $read).Raw 'C:\New\llama;%USERPROFILE%\.tools;C:\Keep' 'Re-adding an existing user PATH entry should be idempotent'
+
+        Update-AiUserPathValue -SubKey $subKey -Path 'C:\New\llama' -Remove
+        $value = & $read
+        Assert-Equal $value.Raw '%USERPROFILE%\.tools;C:\Keep' 'Removing a user PATH entry should keep %VAR% references unexpanded'
+        Assert-Equal $value.Kind $kind::ExpandString 'Removing a user PATH entry should keep REG_EXPAND_SZ'
+
+        Update-AiUserPathValue -SubKey $subKey -Path "$expandedProfile\.tools" -Remove
+        Update-AiUserPathValue -SubKey $subKey -Path 'C:\Keep' -Remove
+        Assert-True ($null -eq (& $read)) 'Removing the last user PATH entry should delete the value, as SetEnvironmentVariable did'
+    } finally {
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($subKey, $false)
+    }
+}
+
 Write-Host "UNIT_OK: ai-common ($script:AssertionCount assertions)"
