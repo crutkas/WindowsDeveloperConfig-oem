@@ -120,10 +120,10 @@ function Get-DevConfigPackageCatalog {
             UninstallOrder = 11
         }
         @{
-            Name                   = 'Python'
-            Id                     = 'Python.Python.3.14'
-            UninstallOrder         = 5
-            AdditionalUninstallIds = @('Python.Launcher', 'Python.PythonInstallManager')
+            Name            = 'Python'
+            Id              = 'Python.PythonInstallManager'
+            # Keep pre-existing runtimes and launchers, including during workstation cleanup.
+            KeepOnUninstall = $true
         }
         @{
             Name            = 'VCRedist'

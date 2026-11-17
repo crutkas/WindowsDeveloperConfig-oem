@@ -74,7 +74,7 @@ Command Palette extension.
 | Go                | ✅ automated   | `GoLang.Go` (rolling — winget publishes Go unversioned)                                 |
 | Java              | ✅ automated   | `Microsoft.OpenJDK.25`                                                                  |
 | Rust              | 🙋 manual     | PowerShell-native one-liner: Developer Mode, PowerShell 7, `Rustlang.Rustup`, Visual Studio Community 2026 with the Desktop development with C++ workload, and the stable Rust toolchain ([`workloads/rust.ps1`](../windows-dev-config/workloads/rust.ps1)) |
-| Python            | ✅ automated   | `Python.Python.3.14`, `astral-sh.uv`                                                    |
+| Python            | ✅ automated   | `Python.PythonInstallManager`; shim reuses existing runtimes or installs default stable. uv is separate. |
 | SQL Developer     | 🙋 manual     | Lightweight SQL Developer: SQL Server + sqlcmd + VS Code extension; no VS/SSDT           |
 | PowerShell        | ✅ automated   | `Microsoft.PowerShell`, `Microsoft.VisualStudioCode`, VS Code PowerShell/Pester extensions + PSScriptAnalyzer settings |
 | WinForms          | 🙋 manual     | `Microsoft.DotNet.SDK.10` + the .NET desktop workload (multi-GB; manual to spare CI minutes) |
@@ -93,6 +93,12 @@ Command Palette extension.
 
 See [`manifest.yml`](../manifest.yml) for the canonical declarative
 list (paths, build/run commands, onboarding URLs).
+
+The personal-fork [Windows onboarding preview](./windows-onboarding-preview.md)
+adds focused Node, VS Code, uv, Temurin, Tauri, Flutter Windows, Electron, and
+React Native Android workloads. Use its local-source dispatcher, not the signed
+upstream wrappers. Framework probes establish prerequisites, not complete app
+builds, and manual flows still need disposable-VM acceptance.
 
 ## Command Palette extension
 

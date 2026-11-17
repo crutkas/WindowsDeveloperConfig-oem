@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3/bundled/config/document.json
+$schema: https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3/bundled/config/document.json
+metadata:
+  winget:
+    processor: dscv3
+resources:
+  - name: Jdk17
+    type: Microsoft.WinGet/Package
+    properties:
+      id: Microsoft.OpenJDK.17
+      source: winget
+      acceptAgreements: true
+    metadata:
+      winget:
+        securityContext: elevated
+  - name: AndroidStudio
+    type: Microsoft.WinGet/Package
+    properties:
+      id: Google.AndroidStudio
+      source: winget
+      acceptAgreements: true
+    metadata:
+      winget:
+        securityContext: elevated

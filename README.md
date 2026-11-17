@@ -24,6 +24,10 @@
 
 Set up a new Windows dev box in minutes, not hours. Pick a setup, run one command, get back to building. Everything here is safe to re-run.
 
+> **Personal-fork onboarding preview:** use the [source-checkout guide](./src/docs/windows-onboarding-preview.md)
+> for the focused Node/Python/editor/framework workloads in this branch.
+> Existing `aka.ms` commands and signed release copies below do **not** install this fork's changes.
+
 ## 🎯 Pick your setup
 
 | You want... | Go to |

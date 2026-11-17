@@ -36,7 +36,7 @@ irm https://aka.ms/devconfig/standard/setup.ps1 | iex
 <details>
 <summary><strong>Details on standard experience</strong></summary>
 
-- **Dev tools:** Windows Terminal, PowerShell 7, Git, GitHub CLI, GitHub Copilot CLI, VS Code, .NET SDK 10, Python 3.14 + uv, Node.js LTS + nvm, Coreutils for Windows, Windows App CLI, Oh My Posh, and PowerToys.
+- **Dev tools:** Windows Terminal, PowerShell 7, Git, GitHub CLI, GitHub Copilot CLI, VS Code, .NET SDK 10, Python install manager + uv, Node.js LTS + nvm, Coreutils for Windows, Windows App CLI, Oh My Posh, and PowerToys.
 - **Terminal:** PowerShell 7 as the default profile, Oh My Posh in your prompt, Cascadia Mono NF as the default font, and a GitHub Copilot profile in the dropdown.
 - **Windows settings:** Dark theme, long paths, File Explorer defaults, Start/Search settings, and Do Not Disturb
 - **WSL:** WSL platform + Ubuntu, including the restart and the automatic resume afterwards.
@@ -175,7 +175,7 @@ Setup checks the WinGet module's connection first — a failure triggers a repai
 | GitHub Copilot CLI | `GitHub.Copilot` |
 | Visual Studio Code | `Microsoft.VisualStudioCode` |
 | .NET SDK 10 | `Microsoft.DotNet.SDK.10` |
-| Python 3.14 | `Python.Python.3.14` |
+| Python install manager | `Python.PythonInstallManager` (first launch installs a runtime if none is available) |
 | Visual C++ Redistributable | `Microsoft.VCRedist.2015+.x64` or `Microsoft.VCRedist.2015+.arm64` |
 | uv | `astral-sh.uv` |
 | Node.js LTS | `OpenJS.NodeJS.LTS` |
@@ -511,7 +511,7 @@ Use the [uninstall command](#quick-start) from Quick start (from source, add `-A
 - **Settings:** disable Sudo, Developer Mode, and Remote Desktop; reset Explorer, Start, search, notification, Bluetooth tray, taskbar End Task, Widgets, Edge policies, long-path, and WSL first-run settings; select the unrestricted QuietHours profile and switch app/system themes to light.
 - **Terminal:** cancel any pending next-sign-in font update; remove `defaultProfile`, `profiles.defaults`, PowerShell/Copilot/Ubuntu profile entries (including dynamically generated PowerShell entries), and the Copilot fragment.
 - **Integrations:** remove the managed Oh My Posh profile block, WinUI template package, and win-dev-skills marketplace. Custom profile code and unrelated plugins are preserved.
-- **Tools:** uv, NVM, the WinUI Copilot plugin, Node.js, Copilot, Python 3.14, Git, GitHub CLI, Oh My Posh, Azure CLI, Coreutils, .NET SDK 10, Intelligent Terminal, PowerToys, Visual Studio Code, Windows App CLI, and PowerShell 7.
+- **Tools:** uv, NVM, the WinUI Copilot plugin, Node.js, Copilot, Git, GitHub CLI, Oh My Posh, Azure CLI, Coreutils, .NET SDK 10, Intelligent Terminal, PowerToys, Visual Studio Code, Windows App CLI, and PowerShell 7. Python install manager, existing Python runtimes and legacy launchers are preserved.
 - **Not removed:** fonts, the Visual C++ runtime, WinGet, Windows optional features, and setup files/logs under `%ProgramData%\CalmOS`.
 
 </details>
@@ -560,7 +560,7 @@ See [Setup actions](#setup-actions) and [What it changes](#what-it-changes) for 
 | **Uninstall is destructive** | Deletes `Ubuntu` and its files and removes targeted tools, including pre-existing installs. Previous settings aren't restored. |
 | **One restart, always visible** | The WSL platform genuinely requires it. The setup warns you for 10 seconds and then restarts with `shutdown /r`. Save your work before you begin. |
 | **Ubuntu's first launch is still manual** | You have to open Ubuntu once to create a Linux username and password. |
-| **Package versions move** | Packages are installed at whatever winget currently publishes, so two machines set up on different days can differ. `Microsoft.DotNet.SDK.10` and `Python.Python.3.14` pin a major version and will need bumping as those age. |
+| **Package versions move** | Packages are installed at whatever winget currently publishes, so two machines set up on different days can differ. `Microsoft.DotNet.SDK.10` pins a major version. Python install manager selects the default stable runtime when needed; it does not replace existing runtimes. |
 | **The font release is pinned** | Cascadia Code `2407.24`, verified by hash. Newer releases need both the version and the hash updated in `steps/fonts.ps1`. |
 | **Terminal settings lose their comments** | `settings.json` is round-tripped through JSON, so comments don't survive. A `.bak` is written first. |
 | **No package selection at run time** | `Full` and `Partial` install all packages. There's no `-Skip` switch or selection prompt. |

@@ -1,10 +1,10 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/2023/08/config/document.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3/bundled/config/document.json
 #
-#     winget configure --file scripts/windows/python/configuration.winget `
+#     winget configure --file src\Workloads\python\configuration.winget `
 #         --accept-configuration-agreements `
 #         --disable-interactivity
 #
-$schema: https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/2023/08/config/document.json
+$schema: https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3/bundled/config/document.json
 metadata:
   winget:
     processor: dscv3
@@ -12,19 +12,8 @@ resources:
   - name: Python
     type: Microsoft.WinGet/Package
     properties:
-      id: Python.Python.3.14
+      id: Python.PythonInstallManager
       source: winget
       acceptAgreements: true
     metadata:
-      winget:
-        securityContext: elevated
-
-  - name: Uv
-    type: Microsoft.WinGet/Package
-    properties:
-      id: astral-sh.uv
-      source: winget
-      acceptAgreements: true
-    metadata:
-      winget:
-        securityContext: elevated
+      description: Python install manager; runtimes are selected by install.ps1 without removing existing Python
