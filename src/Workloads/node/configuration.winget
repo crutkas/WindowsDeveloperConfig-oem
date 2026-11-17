@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3/bundled/config/document.json
+$schema: https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3/bundled/config/document.json
+metadata:
+  winget:
+    processor: dscv3
+resources:
+  - name: NodeLts
+    type: Microsoft.WinGet/Package
+    properties:
+      id: OpenJS.NodeJS.LTS
+      source: winget
+      acceptAgreements: true
+    metadata:
+      winget:
+        securityContext: elevated

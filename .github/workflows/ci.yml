@@ -50,6 +50,7 @@ jobs:
           }
           & "./src/tests/ai-common/all-signed.ps1"
           & "./src/tests/comfort-shell/unit.ps1"
+          & "./src/tests/onboarding/unit.ps1"
 
       - name: Validate report schema and manifest
         shell: pwsh
@@ -65,6 +66,7 @@ jobs:
             & "./src/tests/$id/unit.ps1"
           }
           & "./src/tests/comfort-shell/unit.ps1"
+          & "./src/tests/onboarding/unit.ps1"
           # From 32-bit PowerShell, the WSL Comfort launcher must hand off to 64-bit PowerShell.
           & "$env:SystemRoot\SysWOW64\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File ./src/tests/comfort-shell/unit.ps1
           if ($LASTEXITCODE -ne 0) { throw "32-bit comfort-shell unit tests failed with exit code $LASTEXITCODE." }

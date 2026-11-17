@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3/bundled/config/document.json
+$schema: https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3/bundled/config/document.json
+metadata:
+  winget:
+    processor: dscv3
+resources:
+  - name: Git
+    type: Microsoft.WinGet/Package
+    properties:
+      id: Git.Git
+      source: winget
+      acceptAgreements: true

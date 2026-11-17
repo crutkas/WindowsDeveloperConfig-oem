@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3/bundled/config/document.json
+$schema: https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3/bundled/config/document.json
+metadata:
+  winget:
+    processor: dscv3
+resources:
+  - name: Rustup
+    type: Microsoft.WinGet/Package
+    properties:
+      id: Rustlang.Rustup
+      source: winget
+      acceptAgreements: true
+  - name: WebView2
+    type: Microsoft.WinGet/Package
+    properties:
+      id: Microsoft.EdgeWebView2Runtime
+      source: winget
+      acceptAgreements: true
+    metadata:
+      winget:
+        securityContext: elevated

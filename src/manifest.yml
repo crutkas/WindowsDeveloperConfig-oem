@@ -260,19 +260,136 @@ flows:
 
   - id: python
     name: Python
-    description: CPython 3.14 + uv package manager
+    description: Python install manager; reuse existing runtimes or install the default stable runtime
     category: languages
-    tags: [python, uv, scripting]
+    tags: [python, pymanager, scripting]
     icon: 🐍
     onboardingUrl: https://docs.python.org/3/using/windows.html
     os: [windows]
     windows:
       install: Workloads/python/install.ps1
-      configuration: Workloads/python/configuration.winget
       build: ""
-      run: python src/tests/python/hello.py
+      run: pymanager exec src/tests/python/hello.py
       expected: src/tests/python/expected.txt
-      version: "python --version; uv --version"
+      version: "pymanager list"
+
+  - id: node
+    name: Node.js
+    description: Node.js LTS and bundled npm; preserve an existing version manager
+    category: languages
+    tags: [node, javascript, npm]
+    onboardingUrl: https://nodejs.org/en/download
+    os: [windows]
+    windows:
+      install: Workloads/node/install.ps1
+      build: ""
+      run: node -e "console.log('Hello, Node.js!')"
+      expected: src/tests/onboarding/node.txt
+      version: "node --version; npm.cmd --version"
+
+  - id: vscode
+    name: Visual Studio Code
+    description: Minimal editor only; compose with a language workload
+    category: desktop
+    tags: [vscode, editor]
+    onboardingUrl: https://code.visualstudio.com/docs/setup/windows
+    os: [windows]
+    windows:
+      install: Workloads/vscode/install.ps1
+      build: ""
+      run: pwsh -NoProfile -File src/tests/onboarding/probe.ps1 -Workload vscode
+      expected: src/tests/onboarding/vscode.txt
+      version: "code.cmd --version"
+
+  - id: uv
+    name: uv
+    description: Optional Python project and environment tooling; no global Python replacement
+    category: languages
+    tags: [uv, python, environments]
+    onboardingUrl: https://docs.astral.sh/uv/getting-started/installation/
+    os: [windows]
+    windows:
+      install: Workloads/uv/install.ps1
+      build: ""
+      run: pwsh -NoProfile -File src/tests/onboarding/probe.ps1 -Workload uv
+      expected: src/tests/onboarding/uv.txt
+      version: "uv --version"
+
+  - id: temurin
+    name: Eclipse Temurin
+    description: Temurin JDK 25 LTS; official Windows x64 MSI
+    category: languages
+    tags: [java, temurin, jdk]
+    onboardingUrl: https://adoptium.net/installation/windows/
+    os: [windows]
+    windows:
+      install: Workloads/temurin/install.ps1
+      build: ""
+      run: java src/tests/java/Hello.java
+      expected: src/tests/java/expected.txt
+      version: "java -version; javac -version"
+
+  - id: electron
+    name: Electron prerequisites
+    description: Node.js LTS, npm and tutorial Git; Electron stays project-local
+    category: desktop
+    tags: [electron, node, javascript, desktop]
+    onboardingUrl: https://www.electronjs.org/docs/latest/tutorial/tutorial-prerequisites
+    dependsOn: [node]
+    manual_test: true
+    os: [windows]
+    windows:
+      install: Workloads/electron/install.ps1
+      build: ""
+      run: pwsh -NoProfile -File src/tests/onboarding/probe.ps1 -Workload electron
+      expected: src/tests/onboarding/electron.txt
+      version: "node --version; npm.cmd --version; git --version"
+
+  - id: tauri
+    name: Tauri Windows prerequisites
+    description: MSVC Build Tools, Rust stable MSVC and WebView2; Node optional
+    category: desktop
+    tags: [tauri, rust, webview2, desktop]
+    onboardingUrl: https://v2.tauri.app/start/prerequisites/
+    manual_test: true
+    os: [windows]
+    windows:
+      install: Workloads/tauri/install.ps1
+      build: cargo build --release --manifest-path src/tests/rust/Cargo.toml --quiet
+      run: src\tests\rust\target\release\hello.exe
+      expected: src/tests/rust/expected.txt
+      version: "rustc --version; cargo --version"
+
+  - id: flutter
+    name: Flutter Windows desktop
+    description: Git, stable Flutter SDK and Visual Studio C++ desktop components (x64 preview)
+    category: desktop
+    tags: [flutter, dart, windows, desktop]
+    onboardingUrl: https://docs.flutter.dev/platform-integration/windows/setup
+    manual_test: true
+    os: [windows]
+    windows:
+      install: Workloads/flutter/install.ps1
+      build: ""
+      run: pwsh -NoProfile -File src/tests/onboarding/probe.ps1 -Workload flutter
+      expected: src/tests/onboarding/flutter.txt
+      version: "flutter.bat --version"
+
+  - id: react-native
+    name: React Native Android on Windows
+    description: Node LTS, JDK17 and Android Studio; SDK/license/device setup required (x64)
+    category: desktop
+    tags: [react-native, android, node, mobile]
+    onboardingUrl: https://reactnative.dev/docs/set-up-your-environment
+    dependsOn: [node]
+    manual_test: true
+    os: [windows]
+    windows:
+      install: Workloads/react-native/install.ps1
+      build: ""
+      run: pwsh -NoProfile -File src/tests/onboarding/probe.ps1 -Workload react-native
+      expected: src/tests/onboarding/react-native.txt
+      version: "node --version; java -version"
 
   - id: cuda
     name: NVIDIA CUDA
